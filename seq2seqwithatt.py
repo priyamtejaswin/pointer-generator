@@ -47,7 +47,7 @@ class LSTMDecoder(tf.keras.Model):
         glorot_uniform = tf.keras.initializers.glorot_uniform()
         self.vatt = tf.Variable(glorot_uniform(shape=(word_embed_size, 1)))
 
-        self.linear_first = tf.keras.layers.Dense(4096)  # This is arbitrary.
+        self.linear_first = tf.keras.layers.Dense(256)  # This is arbitrary.
         self.linear_vocab = tf.keras.layers.Dense(vocab_size)
 
         self.lstm_embed_size = lstm_embed_size
@@ -131,7 +131,7 @@ def main():
     BATCH_SIZE = 32
     EPOCHS = 10
 
-    dataset, tokenizer, steps_per_epoch = datastuff(top_k=VOCAB_SIZE, num_examples=1000000, batch_size=BATCH_SIZE)
+    dataset, tokenizer, steps_per_epoch = datastuff(top_k=VOCAB_SIZE, num_examples=2000000, batch_size=BATCH_SIZE)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 
     for epoch in range(EPOCHS):
