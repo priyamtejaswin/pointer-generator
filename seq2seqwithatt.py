@@ -12,6 +12,7 @@ Section 2 in <https://arxiv.org/pdf/1704.04368.pdf>
 import os
 import io
 import re
+import random
 from tqdm import tqdm
 import unicodedata
 import numpy as np
@@ -31,8 +32,7 @@ class BiLSTMEncoder(tf.keras.Model):
 
     def call(self, x):
         embeds = self.embedding(x)
-        outs = self.encoder(embeds)
-        return outs
+        return self.encoder(embeds)  # Output
 
     
 class LSTMDecoder(tf.keras.Model):
@@ -49,6 +49,8 @@ class LSTMDecoder(tf.keras.Model):
 
         self.linear_first = tf.keras.layers.Dense(4096)  # This is arbitrary.
         self.linear_vocab = tf.keras.layers.Dense(vocab_size)
+
+        self.lstm_embed_size = lstm_embed_size
 
 
     def call(self, seq_outs, step_input, prev_states):
@@ -68,23 +70,79 @@ class LSTMDecoder(tf.keras.Model):
         context = tf.reduce_sum(seq_outs * attention, axis=1)
         combined = tf.concat([context, carry], axis=1)
 
-        return combined, hidden, carry
+        # Distribution over vocab.
+        pvocab = self.linear_vocab(self.linear_first(combined))
+
+        return pvocab, hidden, carry
+
+    def reset_state(self, batch_size):
+        return tf.zeros((batch_size, self.lstm_embed_size))
+
+
+class S2SModel(tf.keras.Model):
+    def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000, batch_size=32):
+        super(S2SModel, self).__init__()
+
+        self.encoder = BiLSTMEncoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size)
+        self.decoder = LSTMDecoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size)
+        self.batch_size = batch_size
+        self.optimizer = tf.keras.optimizers.Adam()
+        self.loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
+
+
+    def loss_function(self, real, pred):
+        mask = tf.math.logical_not(tf.math.equal(real, 0))
+        loss_ = self.loss_object(real, pred)
+        mask = tf.cast(mask, dtype=loss_.dtype)
+        loss_ *= mask
+        return tf.reduce_mean(loss_)
+
+
+    @tf.function
+    def train_step(self, inp, targ, tokenizer):
+        loss = 0
+
+        with tf.GradientTape() as tape:
+            enc_output = self.encoder(inp)
+            dec_hidden = [self.decoder.reset_state(self.batch_size)] * 2
+
+            starts = tf.expand_dims([tokenizer.word_index['<start>']] * self.batch_size, 1)
+            dec_input = tf.squeeze(self.encoder.embedding(starts))
+
+            for t in range(1, targ.shape[1]):
+                dec_preds, dec_output, dec_carry = self.decoder(enc_output, dec_input, dec_hidden)
+                loss += self.loss_function(targ[:, t], dec_preds)
+
+                dec_input = tf.squeeze(self.encoder.embedding(tf.expand_dims(targ[:, t], 1)))
+                dec_hidden = [dec_output, dec_carry]
+            
+        batch_loss = loss * 1.0 / int(targ.shape[1])
+        variables = self.trainable_variables
+        gradients = tape.gradient(loss, variables)
+        self.optimizer.apply_gradients(zip(gradients, variables))
+
+        return batch_loss
 
 
 def main():
-    LSTM_EMBED_SIZE = 5
-    WORD_EMBED_SIZE = 7
-    VOCAB_SIZE = 17
+    LSTM_EMBED_SIZE = 256
+    WORD_EMBED_SIZE = 128
+    VOCAB_SIZE = 50000
+    BATCH_SIZE = 32
+    EPOCHS = 10
 
-    encoder = BiLSTMEncoder(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE) 
-    decoder = LSTMDecoder(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE)
+    dataset, tokenizer, steps_per_epoch = datastuff(top_k=VOCAB_SIZE, num_examples=1000000, batch_size=BATCH_SIZE)
+    model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 
-    x = tf.convert_to_tensor(np.random.randint(0, VOCAB_SIZE, [32, 9]))  # [Batch, TimeIndices]
-    print(x.shape)
-    print(x)
-    enc_embeds = encoder(x)
-    prev_states = [tf.random.normal([32, LSTM_EMBED_SIZE]) , tf.zeros([32, LSTM_EMBED_SIZE])]
-    dec_combined, dec_hidden, dec_carry = decoder(enc_embeds, encoder.embedding(x[:, 0]), prev_states)
+    for epoch in range(EPOCHS):
+        total_loss = 0
+
+        progbar = tqdm(enumerate(dataset.take(steps_per_epoch)), total=steps_per_epoch, desc='description')
+
+        for batch, (inp, targ) in progbar:
+            batch_loss = model.train_step(inp, targ, tokenizer)
+            total_loss += batch_loss
+            progbar.set_description("batch loss: %.3f" % batch_loss.numpy())
 
     print("passed.")
 
@@ -124,20 +182,19 @@ def create_dataset(path, num_examples=None):
     return words
 
 
-def datastuff():
+def datastuff(top_k, num_examples=None, batch_size=None):
     maindir = '/projects/metis1/users/ptejaswi/multistep-retrieve-summarize/data/gigawords/org_data'
     path_train_src = os.path.join(maindir, 'train.src.txt')
     path_train_tgt = os.path.join(maindir, 'train.tgt.txt')
 
-    source = create_dataset(path_train_src, 10000)
-    target = create_dataset(path_train_tgt, 10000)
+    source = create_dataset(path_train_src, num_examples)
+    target = create_dataset(path_train_tgt, num_examples)
 
     print("source:", len(source))
     print("target:", len(target))
 
     assert len(source) == len(target)
 
-    top_k = 10000
     tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
     
     tokenizer.fit_on_texts(source + target)
@@ -151,9 +208,19 @@ def datastuff():
     target_seqs = tokenizer.texts_to_sequences(target)
     target_vecs = tf.keras.preprocessing.sequence.pad_sequences(target_seqs, padding='post')
 
-    print("passed")
+    indices = list(range(len(source)))
+    random.shuffle(indices)
+    slice_index = int(len(indices) * 0.8)
+
+    X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
+    y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
+
+    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
+    dataset = dataset.batch(batch_size, drop_remainder=True)
+    dataset = dataset.prefetch(buffer_size=5)
+
+    return dataset, tokenizer, len(X_train)//batch_size
 
 
 if __name__ == '__main__':
-    # main()
-    datastuff()
+    main()
