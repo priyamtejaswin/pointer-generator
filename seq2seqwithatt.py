@@ -19,6 +19,11 @@ import numpy as np
 import tensorflow as tf
 
 
+physical_devices = tf.config.list_physical_devices('GPU')
+tf.config.experimental.set_memory_growth(physical_devices[0], enable=True)
+tf.config.experimental.set_memory_growth(physical_devices[1], enable=True)
+
+
 class BiLSTMEncoder(tf.keras.Model):
     def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000):
         super(BiLSTMEncoder, self).__init__()
@@ -34,46 +39,77 @@ class BiLSTMEncoder(tf.keras.Model):
         embeds = self.embedding(x)
         return self.encoder(embeds)  # Output
 
+
+class BahdanauAttention(tf.keras.layers.Layer):
+    def __init__(self, units):
+        super(BahdanauAttention, self).__init__()
+        self.W1 = tf.keras.layers.Dense(units)
+        self.W2 = tf.keras.layers.Dense(units)
+        self.V = tf.keras.layers.Dense(1)
+
+    def call(self, query, values):
+        # query hidden state shape == (batch_size, hidden size)
+        # query_with_time_axis shape == (batch_size, 1, hidden size)
+        # values shape == (batch_size, max_len, hidden size)
+        # we are doing this to broadcast addition along the time axis to calculate the score
+        query_with_time_axis = tf.expand_dims(query, 1)
+
+        # score shape == (batch_size, max_length, 1)
+        # we get 1 at the last axis because we are applying score to self.V
+        # the shape of the tensor before applying self.V is (batch_size, max_length, units)
+        score = self.V(tf.nn.tanh(
+            self.W1(query_with_time_axis) + self.W2(values)))
+
+        # attention_weights shape == (batch_size, max_length, 1)
+        attention_weights = tf.nn.softmax(score, axis=1)
+
+        # context_vector shape after sum == (batch_size, hidden_size)
+        context_vector = attention_weights * values
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        return context_vector, attention_weights
+
     
 class LSTMDecoder(tf.keras.Model):
     def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000):
         super(LSTMDecoder, self).__init__()
 
-        self.decoder = tf.keras.layers.LSTMCell(lstm_embed_size)
-
-        self.henc_dense = tf.keras.layers.Dense(word_embed_size)
-        self.sdec_dense = tf.keras.layers.Dense(word_embed_size)
-
-        glorot_uniform = tf.keras.initializers.glorot_uniform()
-        self.vatt = tf.Variable(glorot_uniform(shape=(word_embed_size, 1)))
-
-        self.linear_first = tf.keras.layers.Dense(256)  # This is arbitrary.
-        self.linear_vocab = tf.keras.layers.Dense(vocab_size)
+        self.decoder = tf.keras.layers.LSTM(lstm_embed_size, return_sequences=True, return_state=True)
+        self.attention = BahdanauAttention(512)
+        self.fc = tf.keras.layers.Dense(vocab_size)
 
         self.lstm_embed_size = lstm_embed_size
 
 
-    def call(self, seq_outs, step_input, prev_states):
+    def call(self, enc_output, step_input, hidden):
         """
         seq_outs: Encoder output for all input tokens.
         step_input: Input to the decoder for current timestep t.
         prev_states: [prev_h, prev_carry]
         """
-        _, (hidden, carry) = self.decoder(step_input, prev_states)
+        context_vector, attention_weights = self.attention(hidden, enc_output)
 
-        # Compute attention.
-        scores = tf.tanh(self.henc_dense(seq_outs) + tf.expand_dims(self.sdec_dense(carry), 1))
-        logits = tf.linalg.matmul(scores, self.vatt)
-        attention = tf.nn.softmax(logits, axis=1)
+        x = tf.concat([tf.expand_dims(context_vector, 1), step_input], axis=-1)
+        dec_output, final_memory, final_carry = self.decoder(x)
 
-        # Context vector.
-        context = tf.reduce_sum(seq_outs * attention, axis=1)
-        combined = tf.concat([context, carry], axis=1)
+        dec_output = tf.reshape(dec_output, (-1, dec_output.shape[2]))
+        vocab = self.fc(dec_output)
 
-        # Distribution over vocab.
-        pvocab = self.linear_vocab(self.linear_first(combined))
+        return vocab, final_memory, final_carry
 
-        return pvocab, hidden, carry
+        # # Compute attention.
+        # scores = tf.tanh(self.henc_dense(seq_outs) + tf.expand_dims(self.sdec_dense(carry), 1))
+        # logits = tf.linalg.matmul(scores, self.vatt)
+        # attention = tf.nn.softmax(logits, axis=1)
+
+        # # Context vector.
+        # context = tf.reduce_sum(seq_outs * attention, axis=1)
+        # combined = tf.concat([context, carry], axis=1)
+
+        # # Distribution over vocab.
+        # pvocab = tf.nn.softmax(self.linear_vocab(self.linear_first(combined)), axis=1)
+
+        # return pvocab, hidden, carry
 
     def reset_state(self, batch_size):
         return tf.zeros((batch_size, self.lstm_embed_size))
@@ -98,23 +134,24 @@ class S2SModel(tf.keras.Model):
         return tf.reduce_mean(loss_)
 
 
-    @tf.function
+    # @tf.function
     def train_step(self, inp, targ, tokenizer):
         loss = 0
 
         with tf.GradientTape() as tape:
             enc_output = self.encoder(inp)
-            dec_hidden = [self.decoder.reset_state(self.batch_size)] * 2
+            dec_hidden = self.decoder.reset_state(self.batch_size)
 
             starts = tf.expand_dims([tokenizer.word_index['<start>']] * self.batch_size, 1)
-            dec_input = tf.squeeze(self.encoder.embedding(starts))
+            dec_input = self.encoder.embedding(starts)
 
             for t in range(1, targ.shape[1]):
                 dec_preds, dec_output, dec_carry = self.decoder(enc_output, dec_input, dec_hidden)
                 loss += self.loss_function(targ[:, t], dec_preds)
 
-                dec_input = tf.squeeze(self.encoder.embedding(tf.expand_dims(targ[:, t], 1)))
-                dec_hidden = [dec_output, dec_carry]
+                # For next timestep!
+                dec_input = self.encoder.embedding(tf.expand_dims(targ[:, t], 1))
+                dec_hidden = dec_output
             
         batch_loss = loss * 1.0 / int(targ.shape[1])
         variables = self.trainable_variables
@@ -123,26 +160,68 @@ class S2SModel(tf.keras.Model):
 
         return batch_loss
 
+    
+    def evaluate(self, inp, tokenizer, max_len):
+        """
+        `max_len` is max test sequence length during training.
+        """
+        assert len(inp.shape) == 2, "Should be of size [n, length]"
+        enc_output = self.encoder(inp)
+        dec_hidden = [self.decoder.reset_state(len(inp))] * 2
+
+        starts = tf.expand_dims([tokenizer.word_index['<start>']] * len(inp), 1)
+        dec_input = tf.squeeze(self.encoder.embedding(starts))
+
+        answer = np.zeros((inp.shape[0], max_len-1))  # minus1, because this includes <start>.
+        answer += tokenizer.word_index['<pad>']
+        still_alive = np.ones(inp.shape[0])
+        
+        for t in range(max_len-1):
+            dec_preds, dec_output, dec_carry = self.decoder(enc_output, dec_input, dec_hidden)
+            
+            pred_ids = tf.argmax(dec_preds, axis=1).numpy()
+            answer[:, t] = still_alive * pred_ids
+
+            end_id = tokenizer.word_index['<end>']
+            still_alive *= (pred_ids != end_id)
+
+            dec_input = tf.squeeze(self.encoder.embedding(tf.expand_dims(pred_ids, 1)))
+            dec_hidden = [dec_output, dec_carry]
+
+        return answer
+
 
 def main():
     LSTM_EMBED_SIZE = 256
     WORD_EMBED_SIZE = 128
-    VOCAB_SIZE = 50000
+    VOCAB_SIZE = 10000
     BATCH_SIZE = 32
-    EPOCHS = 10
+    EPOCHS = 5
 
-    dataset, tokenizer, steps_per_epoch = datastuff(top_k=VOCAB_SIZE, num_examples=2000000, batch_size=BATCH_SIZE)
+    dataset, tokenizer, steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=50000, batch_size=BATCH_SIZE)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 
+    checkpoint_dir = './training_checkpoints'
+    checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
+    checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
+
     for epoch in range(EPOCHS):
+        print("Epoch:", epoch)
         total_loss = 0
 
-        progbar = tqdm(enumerate(dataset.take(steps_per_epoch)), total=steps_per_epoch, desc='description')
+        progbar = tqdm(enumerate(dataset.take(steps_per_epoch)), total=steps_per_epoch, desc='avg loss: ')
 
         for batch, (inp, targ) in progbar:
             batch_loss = model.train_step(inp, targ, tokenizer)
-            total_loss += batch_loss
-            progbar.set_description("batch loss: %.3f" % batch_loss.numpy())
+            total_loss += batch_loss.numpy()
+            progbar.set_description("avg loss: %.3f" % (total_loss/(batch+1)))
+
+        checkpoint.save(file_prefix = checkpoint_prefix)
+
+    eval_ans = model.evaluate(X_test, tokenizer, max_targ_len)
+    print(tokenizer.sequences_to_texts(y_test[:5]))
+    print()
+    print(tokenizer.sequences_to_texts(eval_ans[:5]))
 
     print("passed.")
 
@@ -217,9 +296,9 @@ def datastuff(top_k, num_examples=None, batch_size=None):
 
     dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
     dataset = dataset.batch(batch_size, drop_remainder=True)
-    dataset = dataset.prefetch(buffer_size=5)
+    dataset = dataset.prefetch(buffer_size=10)
 
-    return dataset, tokenizer, len(X_train)//batch_size
+    return dataset, tokenizer, len(X_train)//batch_size, target_vecs.shape[1], (X_test, y_test)
 
 
 if __name__ == '__main__':
