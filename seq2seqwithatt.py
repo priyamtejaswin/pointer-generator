@@ -134,7 +134,7 @@ class S2SModel(tf.keras.Model):
         return tf.reduce_mean(loss_)
 
 
-    # @tf.function
+    @tf.function
     def train_step(self, inp, targ, tokenizer):
         loss = 0
 
@@ -193,16 +193,16 @@ class S2SModel(tf.keras.Model):
 def main():
     LSTM_EMBED_SIZE = 256
     WORD_EMBED_SIZE = 128
-    VOCAB_SIZE = 20000
+    VOCAB_SIZE = 50000
     BATCH_SIZE = 32
     EPOCHS = 5
 
     dataset, tokenizer, steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=1000000, batch_size=BATCH_SIZE)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 
-    # checkpoint_dir = './training_checkpoints'
-    # checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
-    # checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
+    checkpoint_dir = './training_checkpoints'
+    checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
+    checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
 
     for epoch in range(EPOCHS):
         print("Epoch:", epoch)
@@ -215,12 +215,13 @@ def main():
             total_loss += batch_loss.numpy()
             progbar.set_description("avg loss: %.3f" % (total_loss/(batch+1)))
 
-        # checkpoint.save(file_prefix = checkpoint_prefix)
-
-        eval_ans = model.evaluate(X_test[0:1], tokenizer, max_targ_len)
-        print(tokenizer.sequences_to_texts(y_test[0:1]))
-        print()
-        print(eval_ans)
+            if (batch+1)%500 == 0:
+                print(tokenizer.sequences_to_texts(X_test[0:1]))
+                eval_ans = model.evaluate(X_test[0:1], tokenizer, max_targ_len)
+                print(tokenizer.sequences_to_texts(y_test[0:1]))
+                print()
+                print(eval_ans)
+                checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
 
     print("passed.")
 
@@ -261,7 +262,7 @@ def create_dataset(path, num_examples=None):
 
 
 def datastuff(top_k, num_examples=None, batch_size=None):
-    maindir = '/projects/metis1/users/ptejaswi/multistep-retrieve-summarize/data/gigawords/org_data'
+    maindir = '/projects/ogma2/users/ptejaswi/org_data'
     path_train_src = os.path.join(maindir, 'train.src.txt')
     path_train_tgt = os.path.join(maindir, 'train.tgt.txt')
 
