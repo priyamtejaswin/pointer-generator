@@ -167,43 +167,42 @@ class S2SModel(tf.keras.Model):
         """
         assert len(inp.shape) == 2, "Should be of size [n, length]"
         enc_output = self.encoder(inp)
-        dec_hidden = [self.decoder.reset_state(len(inp))] * 2
+        dec_hidden = self.decoder.reset_state(len(inp))
 
         starts = tf.expand_dims([tokenizer.word_index['<start>']] * len(inp), 1)
-        dec_input = tf.squeeze(self.encoder.embedding(starts))
+        dec_input = self.encoder.embedding(starts)
 
-        answer = np.zeros((inp.shape[0], max_len-1))  # minus1, because this includes <start>.
-        answer += tokenizer.word_index['<pad>']
-        still_alive = np.ones(inp.shape[0])
+        result = ''
         
-        for t in range(max_len-1):
+        for t in range(max_len-2):
             dec_preds, dec_output, dec_carry = self.decoder(enc_output, dec_input, dec_hidden)
-            
-            pred_ids = tf.argmax(dec_preds, axis=1).numpy()
-            answer[:, t] = still_alive * pred_ids
+            pred_id = tf.argmax(dec_preds[0]).numpy()
+            word = tokenizer.index_word[pred_id]
+            if word == '<end>':
+                return result.strip()
+            else:
+                result += word + ' '
 
-            end_id = tokenizer.word_index['<end>']
-            still_alive *= (pred_ids != end_id)
+            # For next timestep!
+            dec_input = self.encoder.embedding(tf.expand_dims([pred_id], 0))
+            dec_hidden = dec_output
 
-            dec_input = tf.squeeze(self.encoder.embedding(tf.expand_dims(pred_ids, 1)))
-            dec_hidden = [dec_output, dec_carry]
-
-        return answer
+        return result
 
 
 def main():
     LSTM_EMBED_SIZE = 256
     WORD_EMBED_SIZE = 128
-    VOCAB_SIZE = 10000
+    VOCAB_SIZE = 20000
     BATCH_SIZE = 32
     EPOCHS = 5
 
-    dataset, tokenizer, steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=50000, batch_size=BATCH_SIZE)
+    dataset, tokenizer, steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=1000000, batch_size=BATCH_SIZE)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 
-    checkpoint_dir = './training_checkpoints'
-    checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
-    checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
+    # checkpoint_dir = './training_checkpoints'
+    # checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
+    # checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
 
     for epoch in range(EPOCHS):
         print("Epoch:", epoch)
@@ -216,12 +215,12 @@ def main():
             total_loss += batch_loss.numpy()
             progbar.set_description("avg loss: %.3f" % (total_loss/(batch+1)))
 
-        checkpoint.save(file_prefix = checkpoint_prefix)
+        # checkpoint.save(file_prefix = checkpoint_prefix)
 
-    eval_ans = model.evaluate(X_test, tokenizer, max_targ_len)
-    print(tokenizer.sequences_to_texts(y_test[:5]))
-    print()
-    print(tokenizer.sequences_to_texts(eval_ans[:5]))
+        eval_ans = model.evaluate(X_test[0:1], tokenizer, max_targ_len)
+        print(tokenizer.sequences_to_texts(y_test[0:1]))
+        print()
+        print(eval_ans)
 
     print("passed.")
 
