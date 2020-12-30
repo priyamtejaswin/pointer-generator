@@ -13,6 +13,7 @@ import os
 import io
 import re
 import random
+import datetime
 from tqdm import tqdm
 import unicodedata
 import numpy as np
@@ -81,16 +82,16 @@ class LSTMDecoder(tf.keras.Model):
         self.lstm_embed_size = lstm_embed_size
 
 
-    def call(self, enc_output, step_input, hidden):
+    def call(self, enc_output, step_input, hidden, initial_state):
         """
         seq_outs: Encoder output for all input tokens.
         step_input: Input to the decoder for current timestep t.
-        prev_states: [prev_h, prev_carry]
+        initial_state: [prev_mem, prev_carry]
         """
         context_vector, attention_weights = self.attention(hidden, enc_output)
 
         x = tf.concat([tf.expand_dims(context_vector, 1), step_input], axis=-1)
-        dec_output, final_memory, final_carry = self.decoder(x)
+        dec_output, final_memory, final_carry = self.decoder(x, initial_state=initial_state)
 
         dec_output = tf.reshape(dec_output, (-1, dec_output.shape[2]))
         vocab = self.fc(dec_output)
@@ -135,7 +136,7 @@ class S2SModel(tf.keras.Model):
 
 
     @tf.function
-    def train_step(self, inp, targ, tokenizer):
+    def train_step(self, inp, targ, tokenizer, update=True):
         loss = 0
 
         with tf.GradientTape() as tape:
@@ -144,19 +145,21 @@ class S2SModel(tf.keras.Model):
 
             starts = tf.expand_dims([tokenizer.word_index['<start>']] * self.batch_size, 1)
             dec_input = self.encoder.embedding(starts)
+            initial_state = [dec_hidden, dec_hidden]
 
             for t in range(1, targ.shape[1]):
-                dec_preds, dec_output, dec_carry = self.decoder(enc_output, dec_input, dec_hidden)
+                dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
                 loss += self.loss_function(targ[:, t], dec_preds)
 
                 # For next timestep!
                 dec_input = self.encoder.embedding(tf.expand_dims(targ[:, t], 1))
-                dec_hidden = dec_output
+                initial_state = [dec_hidden, dec_carry]
             
         batch_loss = loss * 1.0 / int(targ.shape[1])
-        variables = self.trainable_variables
-        gradients = tape.gradient(loss, variables)
-        self.optimizer.apply_gradients(zip(gradients, variables))
+        if update:
+            variables = self.trainable_variables
+            gradients = tape.gradient(loss, variables)
+            self.optimizer.apply_gradients(zip(gradients, variables))
 
         return batch_loss
 
@@ -171,11 +174,12 @@ class S2SModel(tf.keras.Model):
 
         starts = tf.expand_dims([tokenizer.word_index['<start>']] * len(inp), 1)
         dec_input = self.encoder.embedding(starts)
+        initial_state = [dec_hidden, dec_hidden]
 
         result = ''
         
         for t in range(max_len-2):
-            dec_preds, dec_output, dec_carry = self.decoder(enc_output, dec_input, dec_hidden)
+            dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
             pred_id = tf.argmax(dec_preds[0]).numpy()
             word = tokenizer.index_word[pred_id]
             if word == '<end>':
@@ -185,7 +189,7 @@ class S2SModel(tf.keras.Model):
 
             # For next timestep!
             dec_input = self.encoder.embedding(tf.expand_dims([pred_id], 0))
-            dec_hidden = dec_output
+            initial_state = [dec_hidden, dec_carry]
 
         return result
 
@@ -204,6 +208,10 @@ def main():
     checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
     checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
 
+    tboard_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    tboard_train_log_dir = 'logs/' + tboard_time + '/train'
+    tboard_train_writer = tf.summary.create_file_writer(tboard_train_log_dir)
+
     for epoch in range(EPOCHS):
         print("Epoch:", epoch)
         total_loss = 0
@@ -213,15 +221,30 @@ def main():
         for batch, (inp, targ) in progbar:
             batch_loss = model.train_step(inp, targ, tokenizer)
             total_loss += batch_loss.numpy()
-            progbar.set_description("avg loss: %.3f" % (total_loss/(batch+1)))
+            avg_loss = total_loss/(batch+1)
+            progbar.set_description("avg loss: %.3f" % avg_loss)
 
-            if (batch+1)%500 == 0:
+            with tboard_train_writer.as_default():
+                tf.summary.scalar('train-loss', avg_loss, step=(epoch * steps_per_epoch + batch))
+
+            if (batch+1)%1000 == 0:
                 print(tokenizer.sequences_to_texts(X_test[0:1]))
                 eval_ans = model.evaluate(X_test[0:1], tokenizer, max_targ_len)
                 print(tokenizer.sequences_to_texts(y_test[0:1]))
                 print()
                 print(eval_ans)
                 checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
+
+                with tboard_train_writer.as_default():
+                    test_loss = 0
+                    norm = 0
+                    for i in range(0, min(2000, len(X_test)), BATCH_SIZE):
+                        x = X_test[i : i+BATCH_SIZE]
+                        y = y_test[i : i+BATCH_SIZE]
+                        test_loss += model.train_step(x, y, tokenizer, update=False).numpy()
+                        norm += 1
+
+                    tf.summary.scalar('test-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
 
     print("passed.")
 
