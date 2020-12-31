@@ -23,7 +23,7 @@ import numpy as np
 # FLAGS = tf.app.flags.FLAGS
 class Flags(object):
   def __init__(self):
-    self.beam_size = 3
+    self.beam_size = 5
     self.max_dec_steps = 30
     self.min_dec_steps = 2
 
@@ -96,6 +96,7 @@ def run_beam_search(model, vocab, batch):
                      log_probs=[0.0],
                      state=dec_in_state) for _ in range(FLAGS.beam_size)]
   results = [] # this will contain finished hypotheses (those that have emitted the [STOP] token)
+  initial_state = [model.decoder.reset_state(len(batch))] * 2
 
   steps = 0
   while steps < FLAGS.max_dec_steps and len(results) < FLAGS.beam_size:
@@ -112,7 +113,9 @@ def run_beam_search(model, vocab, batch):
 
     step_input = model.encoder.embedding(latest_tokens)
     step_input = tf.expand_dims(step_input, 1)
-    vocab_logits, final_output, final_carry = model.decoder(enc_states, step_input, states)
+    vocab_logits, final_output, final_carry = model.decoder(enc_states, step_input, states, initial_state)
+    initial_state = [final_output, final_carry]
+
     vocab_probs = tf.nn.softmax(vocab_logits).numpy()
     topk_ids = np.argsort(vocab_probs, axis=1)[:, -FLAGS.beam_size:][:, ::-1]
     topk_log_probs = np.log10([vocab_probs[i][row] for i, row in enumerate(topk_ids)])
