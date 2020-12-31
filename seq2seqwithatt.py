@@ -199,7 +199,7 @@ def main():
     WORD_EMBED_SIZE = 128
     VOCAB_SIZE = 50000
     BATCH_SIZE = 32
-    EPOCHS = 5
+    EPOCHS = 3
 
     dataset, tokenizer, steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=1000000, batch_size=BATCH_SIZE)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
