@@ -25,13 +25,14 @@ LSTM_EMBED_SIZE = 256
 WORD_EMBED_SIZE = 128
 VOCAB_SIZE = 50000
 BATCH_SIZE = 64
-EPOCHS = 5
+EPOCHS = 3
 
-dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
-# max_targ_len = 25
-# with open('hgf_tokenizers/tf_tokenizer.cpkl', 'rb') as fp:
-    # tokenizer = pickle.load(fp)
-# print("loaded tokenizer.")
+# dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
+max_targ_len = 25
+with open('hgf_tokenizers/src_tokenizer.cpkl', 'rb') as fp:
+    src_tokenizer = pickle.load(fp)
+with open('hgf_tokenizers/tgt_tokenizer.cpkl', 'rb') as fp:
+    tgt_tokenizer = pickle.load(fp)
 
 model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 

@@ -12,6 +12,8 @@ Section 2 in <https://arxiv.org/pdf/1704.04368.pdf>
 import os
 import io
 import re
+import sys
+import pickle
 import random
 import datetime
 from tqdm import tqdm
@@ -202,9 +204,16 @@ def main():
     dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 
+    with open('./hgf_tokenizers/src_tokenizer.cpkl', 'wb') as fp:
+        pickle.dump(src_tokenizer, fp)
+
+    with open('./hgf_tokenizers/tgt_tokenizer.cpkl', 'wb') as fp:
+        pickle.dump(tgt_tokenizer, fp)
+
     checkpoint_dir = './training_checkpoints'
     checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
     checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
+    status = checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
 
     tboard_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     tboard_train_log_dir = 'logs/' + tboard_time + '/train'
@@ -286,7 +295,7 @@ def simple_load(path, num_examples=None):
     return ['<start> ' + l.strip() + ' <end>' for l in lines[:num_examples]]
 
 
-def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=True):
+def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=False):
     """
     Returns
     dataset: the dataset iterator
