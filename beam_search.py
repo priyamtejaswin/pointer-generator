@@ -111,8 +111,7 @@ def run_beam_search(model, vocab, batch):
     #                     dec_init_states=states,
     #                     prev_coverage=prev_coverage)
 
-    step_input = model.encoder.embedding(latest_tokens)
-    step_input = tf.expand_dims(step_input, 1)
+    step_input = tf.transpose(tf.expand_dims(latest_tokens, 0))
     vocab_logits, final_output, final_carry = model.decoder(enc_states, step_input, states, initial_state)
     initial_state = [final_output, final_carry]
 

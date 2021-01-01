@@ -30,7 +30,6 @@ class BiLSTMEncoder(tf.keras.Model):
         super(BiLSTMEncoder, self).__init__()
 
         self.embedding = tf.keras.layers.Embedding(vocab_size, word_embed_size)
-
         self.encoder = tf.keras.layers.Bidirectional(
             tf.keras.layers.LSTM(lstm_embed_size, return_sequences=True)
         )
@@ -75,6 +74,7 @@ class LSTMDecoder(tf.keras.Model):
     def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000):
         super(LSTMDecoder, self).__init__()
 
+        self.embedding = tf.keras.layers.Embedding(vocab_size, word_embed_size)
         self.decoder = tf.keras.layers.LSTM(lstm_embed_size, return_sequences=True, return_state=True)
         self.attention = BahdanauAttention(512)
         self.fc = tf.keras.layers.Dense(vocab_size)
@@ -82,7 +82,7 @@ class LSTMDecoder(tf.keras.Model):
         self.lstm_embed_size = lstm_embed_size
 
 
-    def call(self, enc_output, step_input, hidden, initial_state):
+    def call(self, enc_output, step_token, hidden, initial_state):
         """
         seq_outs: Encoder output for all input tokens.
         step_input: Input to the decoder for current timestep t.
@@ -90,6 +90,7 @@ class LSTMDecoder(tf.keras.Model):
         """
         context_vector, attention_weights = self.attention(hidden, enc_output)
 
+        step_input = self.embedding(step_token)
         x = tf.concat([tf.expand_dims(context_vector, 1), step_input], axis=-1)
         dec_output, final_memory, final_carry = self.decoder(x, initial_state=initial_state)
 
@@ -136,15 +137,13 @@ class S2SModel(tf.keras.Model):
 
 
     @tf.function
-    def train_step(self, inp, targ, tokenizer, update=True):
+    def train_step(self, inp, targ, tgt_tokenizer, update=True):
         loss = 0
 
         with tf.GradientTape() as tape:
             enc_output = self.encoder(inp)
             dec_hidden = self.decoder.reset_state(self.batch_size)
-
-            starts = tf.expand_dims([tokenizer.word_index['<start>']] * self.batch_size, 1)
-            dec_input = self.encoder.embedding(starts)
+            dec_input = tf.expand_dims([tgt_tokenizer.word_index['<start>']] * self.batch_size, 1)
             initial_state = [dec_hidden, dec_hidden]
 
             for t in range(1, targ.shape[1]):
@@ -152,7 +151,7 @@ class S2SModel(tf.keras.Model):
                 loss += self.loss_function(targ[:, t], dec_preds)
 
                 # For next timestep!
-                dec_input = self.encoder.embedding(tf.expand_dims(targ[:, t], 1))
+                dec_input = tf.expand_dims(targ[:, t], 1)
                 initial_state = [dec_hidden, dec_carry]
             
         batch_loss = loss * 1.0 / int(targ.shape[1])
@@ -164,16 +163,14 @@ class S2SModel(tf.keras.Model):
         return batch_loss
 
     
-    def evaluate(self, inp, tokenizer, max_len):
+    def evaluate(self, inp, tgt_tokenizer, max_len):
         """
         `max_len` is max test sequence length during training.
         """
         assert len(inp.shape) == 2, "Should be of size [n, length]"
         enc_output = self.encoder(inp)
         dec_hidden = self.decoder.reset_state(len(inp))
-
-        starts = tf.expand_dims([tokenizer.word_index['<start>']] * len(inp), 1)
-        dec_input = self.encoder.embedding(starts)
+        dec_input = tf.expand_dims([tgt_tokenizer.word_index['<start>']] * len(inp), 1)
         initial_state = [dec_hidden, dec_hidden]
 
         result = ''
@@ -181,14 +178,14 @@ class S2SModel(tf.keras.Model):
         for t in range(max_len-2):
             dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
             pred_id = tf.argmax(dec_preds[0]).numpy()
-            word = tokenizer.index_word[pred_id]
+            word = tgt_tokenizer.index_word[pred_id]
             if word == '<end>':
                 return result.strip()
             else:
                 result += word + ' '
 
             # For next timestep!
-            dec_input = self.encoder.embedding(tf.expand_dims([pred_id], 0))
+            dec_input = tf.expand_dims([pred_id], 0)
             initial_state = [dec_hidden, dec_carry]
 
         return result
@@ -201,7 +198,7 @@ def main():
     BATCH_SIZE = 32
     EPOCHS = 3
 
-    dataset, tokenizer, steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=1000000, batch_size=BATCH_SIZE)
+    dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=1000000, batch_size=BATCH_SIZE)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 
     checkpoint_dir = './training_checkpoints'
@@ -219,18 +216,19 @@ def main():
         progbar = tqdm(enumerate(dataset.take(steps_per_epoch)), total=steps_per_epoch, desc='avg loss: ')
 
         for batch, (inp, targ) in progbar:
-            batch_loss = model.train_step(inp, targ, tokenizer)
+            batch_loss = model.train_step(inp, targ, tgt_tokenizer)
             total_loss += batch_loss.numpy()
             avg_loss = total_loss/(batch+1)
             progbar.set_description("avg loss: %.3f" % avg_loss)
 
-            with tboard_train_writer.as_default():
-                tf.summary.scalar('train-loss', avg_loss, step=(epoch * steps_per_epoch + batch))
+            if (batch+1)%50 == 0:
+                with tboard_train_writer.as_default():
+                    tf.summary.scalar('train-loss', avg_loss, step=(epoch * steps_per_epoch + batch))
 
             if (batch+1)%1000 == 0:
-                print(tokenizer.sequences_to_texts(X_test[0:1]))
-                eval_ans = model.evaluate(X_test[0:1], tokenizer, max_targ_len)
-                print(tokenizer.sequences_to_texts(y_test[0:1]))
+                print(src_tokenizer.sequences_to_texts(X_test[0:1]))
+                eval_ans = model.evaluate(X_test[0:1], tgt_tokenizer, max_targ_len)
+                print(tgt_tokenizer.sequences_to_texts(y_test[0:1]))
                 print()
                 print(eval_ans)
                 checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
@@ -241,7 +239,7 @@ def main():
                     for i in range(0, min(2000, len(X_test)), BATCH_SIZE):
                         x = X_test[i : i+BATCH_SIZE]
                         y = y_test[i : i+BATCH_SIZE]
-                        test_loss += model.train_step(x, y, tokenizer, update=False).numpy()
+                        test_loss += model.train_step(x, y, tgt_tokenizer, update=False).numpy()
                         norm += 1
 
                     tf.summary.scalar('test-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
@@ -285,6 +283,14 @@ def create_dataset(path, num_examples=None):
 
 
 def datastuff(top_k, num_examples=None, batch_size=None):
+    """
+    Returns
+    dataset: the dataset iterator
+    (src_tokenizer, tgt_tokenizer): source and target tokenizers
+    steps_per_epoch
+    max_target_seq_len
+    (X_test, y_ytest) 
+    """
     maindir = '/projects/ogma2/users/ptejaswi/org_data'
     path_train_src = os.path.join(maindir, 'train.src.txt')
     path_train_tgt = os.path.join(maindir, 'train.tgt.txt')
@@ -297,17 +303,22 @@ def datastuff(top_k, num_examples=None, batch_size=None):
 
     assert len(source) == len(target)
 
-    tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
-    
-    tokenizer.fit_on_texts(source + target)
+    src_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
+    src_tokenizer.fit_on_texts(source)
     # Set <pad> AFTER fitting on texts!
-    tokenizer.index_word[0] = '<pad>'
-    tokenizer.word_index['<pad>'] = 0
+    src_tokenizer.index_word[0] = '<pad>'
+    src_tokenizer.word_index['<pad>'] = 0
 
-    source_seqs = tokenizer.texts_to_sequences(source)
+    source_seqs = src_tokenizer.texts_to_sequences(source)
     source_vecs = tf.keras.preprocessing.sequence.pad_sequences(source_seqs, padding='post')
 
-    target_seqs = tokenizer.texts_to_sequences(target)
+    # Now, for the target ...
+    tgt_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
+    tgt_tokenizer.fit_on_texts(target)
+    # Set <pad> AFTER fitting on texts!
+    tgt_tokenizer.index_word[0] = '<pad>'
+    tgt_tokenizer.word_index['<pad>'] = 0
+    target_seqs = tgt_tokenizer.texts_to_sequences(target)
     target_vecs = tf.keras.preprocessing.sequence.pad_sequences(target_seqs, padding='post')
 
     indices = list(range(len(source)))
@@ -319,9 +330,9 @@ def datastuff(top_k, num_examples=None, batch_size=None):
 
     dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
     dataset = dataset.batch(batch_size, drop_remainder=True)
-    dataset = dataset.prefetch(buffer_size=10)
+    dataset = dataset.prefetch(buffer_size=batch_size)
 
-    return dataset, tokenizer, len(X_train)//batch_size, target_vecs.shape[1], (X_test, y_test)
+    return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, target_vecs.shape[1], (X_test, y_test)
 
 
 if __name__ == '__main__':
