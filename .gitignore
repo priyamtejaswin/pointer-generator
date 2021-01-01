@@ -1,7 +1,7 @@
 *.pyc
 *__pycache__
 *vscode
-*checkpoint*
+training_checkpoints/
 hgf_tokenizers/
 logs/
 results/
