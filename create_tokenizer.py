@@ -16,7 +16,8 @@ import sys
 datadir = sys.argv[1]
 assert os.path.isdir(datadir), "Source dir does not exist."
 
-datafiles = [os.path.join(datadir, f) for f in sys.argv[2:]]
+filenames = sys.argv[2:]
+datafiles = [os.path.join(datadir, f) for f in filenames]
 assert len(datafiles)>0, "No source files provided."
 for path in datafiles:
     assert os.path.isfile(path), "File %s does not exist." % path
@@ -63,8 +64,9 @@ for row in before:
 print()
 
 # Save and reload to check ...
-tokenizer.save(os.path.join(savepath, "tokenizer.json"))
-tokenizer = Tokenizer.from_file(os.path.join(savepath, "tokenizer.json"))
+savename = "tokenizer_%s_%d.json" % (filenames[0], len(filenames))
+tokenizer.save(os.path.join(savepath, savename))
+tokenizer = Tokenizer.from_file(os.path.join(savepath, savename))
 
 # Check ...
 after = tokenizer.encode_batch(['<start> one word <end>', '<start> ZZZ word more <end>'])
@@ -79,4 +81,4 @@ for b, a in zip(before, after):
     assert b.tokens == a.tokens
     assert b.ids == a.ids
 
-print("tested and saved.")
+print("tested and saved. %s" % savename)

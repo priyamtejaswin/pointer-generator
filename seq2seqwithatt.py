@@ -18,6 +18,7 @@ from tqdm import tqdm
 import unicodedata
 import numpy as np
 import tensorflow as tf
+from tokenizers import Tokenizer
 
 
 physical_devices = tf.config.list_physical_devices('GPU')
@@ -195,10 +196,10 @@ def main():
     LSTM_EMBED_SIZE = 256
     WORD_EMBED_SIZE = 128
     VOCAB_SIZE = 50000
-    BATCH_SIZE = 32
+    BATCH_SIZE = 64
     EPOCHS = 3
 
-    dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=1000000, batch_size=BATCH_SIZE)
+    dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 
     checkpoint_dir = './training_checkpoints'
@@ -211,19 +212,17 @@ def main():
 
     for epoch in range(EPOCHS):
         print("Epoch:", epoch)
-        total_loss = 0
-
-        progbar = tqdm(enumerate(dataset.take(steps_per_epoch)), total=steps_per_epoch, desc='avg loss: ')
+        progbar = tqdm(enumerate(dataset.take(steps_per_epoch)), total=steps_per_epoch, desc='epoch: , avg loss: ')
 
         for batch, (inp, targ) in progbar:
             batch_loss = model.train_step(inp, targ, tgt_tokenizer)
-            total_loss += batch_loss.numpy()
-            avg_loss = total_loss/(batch+1)
-            progbar.set_description("avg loss: %.3f" % avg_loss)
+            # total_loss += batch_loss.numpy()
+            # avg_loss = total_loss/(batch+1)
+            progbar.set_description("epoch: %d, avg loss: %.3f" % (epoch, batch_loss.numpy()))
 
             if (batch+1)%50 == 0:
                 with tboard_train_writer.as_default():
-                    tf.summary.scalar('train-loss', avg_loss, step=(epoch * steps_per_epoch + batch))
+                    tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
 
             if (batch+1)%1000 == 0:
                 print(src_tokenizer.sequences_to_texts(X_test[0:1]))
@@ -282,7 +281,12 @@ def create_dataset(path, num_examples=None):
     return words
 
 
-def datastuff(top_k, num_examples=None, batch_size=None):
+def simple_load(path, num_examples=None):
+    lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
+    return ['<start> ' + l.strip() + ' <end>' for l in lines[:num_examples]]
+
+
+def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=True):
     """
     Returns
     dataset: the dataset iterator
@@ -295,44 +299,79 @@ def datastuff(top_k, num_examples=None, batch_size=None):
     path_train_src = os.path.join(maindir, 'train.src.txt')
     path_train_tgt = os.path.join(maindir, 'train.tgt.txt')
 
-    source = create_dataset(path_train_src, num_examples)
-    target = create_dataset(path_train_tgt, num_examples)
+    if use_hgft is False:
+        source = create_dataset(path_train_src, num_examples)
+        target = create_dataset(path_train_tgt, num_examples)
 
-    print("source:", len(source))
-    print("target:", len(target))
+        print("source:", len(source))
+        print("target:", len(target))
 
-    assert len(source) == len(target)
+        assert len(source) == len(target)
 
-    src_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
-    src_tokenizer.fit_on_texts(source)
-    # Set <pad> AFTER fitting on texts!
-    src_tokenizer.index_word[0] = '<pad>'
-    src_tokenizer.word_index['<pad>'] = 0
+        src_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
+        src_tokenizer.fit_on_texts(source)
+        # Set <pad> AFTER fitting on texts!
+        src_tokenizer.index_word[0] = '<pad>'
+        src_tokenizer.word_index['<pad>'] = 0
 
-    source_seqs = src_tokenizer.texts_to_sequences(source)
-    source_vecs = tf.keras.preprocessing.sequence.pad_sequences(source_seqs, padding='post')
+        source_seqs = src_tokenizer.texts_to_sequences(source)
+        source_vecs = tf.keras.preprocessing.sequence.pad_sequences(source_seqs, padding='post')
 
-    # Now, for the target ...
-    tgt_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
-    tgt_tokenizer.fit_on_texts(target)
-    # Set <pad> AFTER fitting on texts!
-    tgt_tokenizer.index_word[0] = '<pad>'
-    tgt_tokenizer.word_index['<pad>'] = 0
-    target_seqs = tgt_tokenizer.texts_to_sequences(target)
-    target_vecs = tf.keras.preprocessing.sequence.pad_sequences(target_seqs, padding='post')
+        # Now, for the target ...
+        tgt_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
+        tgt_tokenizer.fit_on_texts(target)
+        # Set <pad> AFTER fitting on texts!
+        tgt_tokenizer.index_word[0] = '<pad>'
+        tgt_tokenizer.word_index['<pad>'] = 0
+        target_seqs = tgt_tokenizer.texts_to_sequences(target)
+        target_vecs = tf.keras.preprocessing.sequence.pad_sequences(target_seqs, padding='post')
 
-    indices = list(range(len(source)))
-    random.shuffle(indices)
-    slice_index = int(len(indices) * 0.8)
+        indices = list(range(len(source)))
+        random.shuffle(indices)
+        slice_index = int(len(indices) * 0.8)
 
-    X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
-    y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
+        X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
+        y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
 
-    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
-    dataset = dataset.batch(batch_size, drop_remainder=True)
-    dataset = dataset.prefetch(buffer_size=batch_size)
+        dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
+        dataset = dataset.batch(batch_size, drop_remainder=True)
+        dataset = dataset.prefetch(buffer_size=batch_size)
 
-    return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, target_vecs.shape[1], (X_test, y_test)
+        max_targ_len = target_vecs.shape[1]
+
+    else:
+        src_tokenizer = Tokenizer.from_file('hgf_tokenizers/tokenizer_train.src.txt_1.json')
+        tgt_tokenizer = Tokenizer.from_file('hgf_tokenizers/tokenizer_train.tgt.txt_1.json')
+
+        source = simple_load(path_train_src)
+        target = simple_load(path_train_tgt)
+        assert len(source) == len(target)
+        print("source:", len(source))
+        print("target:", len(target))
+
+        # td_source = tf.data.TextLineDataset([path_train_src])
+        # td_target = tf.data.TextLineDataset([path_train_tgt])
+        
+        indices = list(range(len(source)))
+        random.shuffle(indices)
+        slice_index = int(len(indices) * 0.8)
+
+        X_train, X_test = source[:slice_index], source[slice_index:]
+        y_train, y_test = target[:slice_index], target[slice_index:]
+
+        def encode(x, y):
+            return [r.ids for r in src_tokenizer.encode_batch(x)], \
+                [r.ids for r in tgt_tokenizer.encode_batch(y)]
+
+        dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
+        dataset = dataset.batch(batch_size, drop_remainder=True)
+        dataset = dataset.map(encode)
+        dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
+
+        X_test, y_test = encode(X_test, y_test)
+        max_targ_len = max([len(r) for r in y_test])
+
+    return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, max_targ_len, (X_test, y_test)
 
 
 if __name__ == '__main__':
