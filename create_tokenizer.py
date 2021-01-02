@@ -11,6 +11,7 @@ https://huggingface.co/docs/tokenizers/python/latest/quicktour.html
 
 import os
 import sys
+from tqdm import tqdm
 
 
 datadir = sys.argv[1]
@@ -37,7 +38,12 @@ trainer = WordPieceTrainer(special_tokens=['<pad>', '<start>', '<end>', '<unk>']
 tokenizer.pre_tokenizer = Whitespace()
 
 # Train the tokenizer ...
-tokenizer.train(trainer, datafiles)
+lines = []
+for path in datafiles:
+    with open(path) as fp:
+        lines.extend([l.strip().replace('#', '1') for l in tqdm(fp.readlines())])
+
+tokenizer.train_from_iterator(iterator=lines, trainer=trainer)
 
 # Check for the dir ...
 savepath = './hgf_tokenizers'
