@@ -12,6 +12,7 @@ Section 2 in <https://arxiv.org/pdf/1704.04368.pdf>
 import os
 import io
 import re
+import pickle
 import random
 import datetime
 from tqdm import tqdm
@@ -144,7 +145,7 @@ class S2SModel(tf.keras.Model):
         with tf.GradientTape() as tape:
             enc_output = self.encoder(inp)
             dec_hidden = self.decoder.reset_state(self.batch_size)
-            dec_input = tf.expand_dims([tgt_tokenizer.word_index['<start>']] * self.batch_size, 1)
+            dec_input = tf.expand_dims([tgt_tokenizer.token_to_id('<start>')] * self.batch_size, 1)
             initial_state = [dec_hidden, dec_hidden]
 
             for t in range(1, targ.shape[1]):
@@ -171,7 +172,7 @@ class S2SModel(tf.keras.Model):
         assert len(inp.shape) == 2, "Should be of size [n, length]"
         enc_output = self.encoder(inp)
         dec_hidden = self.decoder.reset_state(len(inp))
-        dec_input = tf.expand_dims([tgt_tokenizer.word_index['<start>']] * len(inp), 1)
+        dec_input = tf.expand_dims([tgt_tokenizer.token_to_id('<start>')] * len(inp), 1)
         initial_state = [dec_hidden, dec_hidden]
 
         result = ''
@@ -179,7 +180,7 @@ class S2SModel(tf.keras.Model):
         for t in range(max_len-2):
             dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
             pred_id = tf.argmax(dec_preds[0]).numpy()
-            word = tgt_tokenizer.index_word[pred_id]
+            word = tgt_tokenizer.id_to_token(pred_id)
             if word == '<end>':
                 return result.strip()
             else:
@@ -199,8 +200,17 @@ def main():
     BATCH_SIZE = 64
     EPOCHS = 3
 
-    dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
+    dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, 
+                                                                                                         num_examples=None, 
+                                                                                                         batch_size=BATCH_SIZE, 
+                                                                                                         use_hgft=True)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
+
+    with open('./hgf_tokenizers/src_tokenizer.cpkl', 'wb') as fp:
+        pickle.dump(src_tokenizer, fp)
+
+    with open('./hgf_tokenizers/tgt_tokenizer.cpkl', 'wb') as fp:
+        pickle.dump(tgt_tokenizer, fp)
 
     checkpoint_dir = './training_checkpoints'
     checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
@@ -225,9 +235,9 @@ def main():
                     tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
 
             if (batch+1)%1000 == 0:
-                print(src_tokenizer.sequences_to_texts(X_test[0:1]))
+                print(src_tokenizer.decode(X_test[0]).replace(' ##', ''))
                 eval_ans = model.evaluate(X_test[0:1], tgt_tokenizer, max_targ_len)
-                print(tgt_tokenizer.sequences_to_texts(y_test[0:1]))
+                print(tgt_tokenizer.decode(y_test[0]).replace(' ##', ''))
                 print()
                 print(eval_ans)
                 checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
@@ -283,7 +293,7 @@ def create_dataset(path, num_examples=None):
 
 def simple_load(path, num_examples=None):
     lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
-    return ['<start> ' + l.strip() + ' <end>' for l in lines[:num_examples]]
+    return ['<start> ' + l.strip().replace('#', '1') + ' <end>' for l in lines[:num_examples]]
 
 
 def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=True):
@@ -295,7 +305,7 @@ def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=True):
     max_target_seq_len
     (X_test, y_ytest) 
     """
-    maindir = '/projects/ogma2/users/ptejaswi/org_data'
+    maindir = '../multistep-retrieve-summarize/data/gigawords/org_data/'
     path_train_src = os.path.join(maindir, 'train.src.txt')
     path_train_tgt = os.path.join(maindir, 'train.tgt.txt')
 
@@ -356,19 +366,20 @@ def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=True):
         random.shuffle(indices)
         slice_index = int(len(indices) * 0.8)
 
+        print("encoding now ...")
+        source = [src_tokenizer.encode(r).ids for r in tqdm(source)]
+        target = [tgt_tokenizer.encode(r).ids for r in tqdm(target)]
+
+        source = tf.keras.preprocessing.sequence.pad_sequences(source, padding='post')
+        target = tf.keras.preprocessing.sequence.pad_sequences(target, padding='post')
+
         X_train, X_test = source[:slice_index], source[slice_index:]
         y_train, y_test = target[:slice_index], target[slice_index:]
 
-        def encode(x, y):
-            return [r.ids for r in src_tokenizer.encode_batch(x)], \
-                [r.ids for r in tgt_tokenizer.encode_batch(y)]
-
         dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
         dataset = dataset.batch(batch_size, drop_remainder=True)
-        dataset = dataset.map(encode)
-        dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
+        dataset = dataset.prefetch(buffer_size=batch_size)
 
-        X_test, y_test = encode(X_test, y_test)
         max_targ_len = max([len(r) for r in y_test])
 
     return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, max_targ_len, (X_test, y_test)
