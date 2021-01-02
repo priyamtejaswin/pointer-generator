@@ -5,3 +5,4 @@ training_checkpoints/
 hgf_tokenizers/
 logs/
 results/
+*/.ipynb_checkpoints/
