@@ -247,8 +247,10 @@ def main():
                     for i in range(0, min(2000, len(X_test)), BATCH_SIZE):
                         x = X_test[i : i+BATCH_SIZE]
                         y = y_test[i : i+BATCH_SIZE]
-                        test_loss += model.train_step(x, y, tgt_tokenizer, update=False).numpy()
-                        norm += 1
+
+                        if len(x) == BATCH_SIZE:
+                            test_loss += model.train_step(x, y, tgt_tokenizer, update=False).numpy()
+                            norm += 1
 
                     tf.summary.scalar('test-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
 
@@ -337,7 +339,7 @@ def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=False):
 
         indices = list(range(len(source)))
         random.shuffle(indices)
-        slice_index = int(len(indices) * 0.8)
+        slice_index = int(len(indices) * 0.9995)
 
         X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
         y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
@@ -363,7 +365,7 @@ def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=False):
         
         indices = list(range(len(source)))
         random.shuffle(indices)
-        slice_index = int(len(indices) * 0.8)
+        slice_index = int(len(indices) * 0.9995)
 
         X_train, X_test = source[:slice_index], source[slice_index:]
         y_train, y_test = target[:slice_index], target[slice_index:]
