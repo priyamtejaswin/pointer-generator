@@ -34,13 +34,20 @@ class BiLSTMEncoder(tf.keras.Model):
 
         self.embedding = tf.keras.layers.Embedding(vocab_size, word_embed_size)
         self.encoder = tf.keras.layers.Bidirectional(
-            tf.keras.layers.LSTM(lstm_embed_size, return_sequences=True)
+            tf.keras.layers.LSTM(lstm_embed_size, return_sequences=True, return_state=True)
         )
+        self.hidden_map = tf.keras.layers.Dense(lstm_embed_size)
+        self.carry_map = tf.keras.layers.Dense(lstm_embed_size)
 
 
     def call(self, x):
         embeds = self.embedding(x)
-        return self.encoder(embeds)  # Output
+        # return self.encoder(embeds)  # Output
+        sequences, fwhid, fwcar, bwhid, bwcar = self.encoder(embeds)
+        cathid = tf.concat([fwhid, bwhid], axis=-1)
+        catcar = tf.concat([fwcar, bwcar], axis=-1)
+
+        return sequences, self.hidden_map(cathid), self.carry_map(catcar)
 
 
 class BahdanauAttention(tf.keras.layers.Layer):
@@ -144,10 +151,9 @@ class S2SModel(tf.keras.Model):
         loss = 0
 
         with tf.GradientTape() as tape:
-            enc_output = self.encoder(inp)
-            dec_hidden = self.decoder.reset_state(self.batch_size)
+            enc_output, dec_hidden, dec_carry = self.encoder(inp)
+            initial_state = [dec_hidden, dec_carry]
             dec_input = tf.expand_dims([tgt_tokenizer.token_to_id('<start>')] * self.batch_size, 1)
-            initial_state = [dec_hidden, dec_hidden]
 
             for t in range(1, targ.shape[1]):
                 dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
@@ -171,10 +177,9 @@ class S2SModel(tf.keras.Model):
         `max_len` is max test sequence length during training.
         """
         assert len(inp.shape) == 2, "Should be of size [n, length]"
-        enc_output = self.encoder(inp)
-        dec_hidden = self.decoder.reset_state(len(inp))
+        enc_output, dec_hidden, dec_carry = self.encoder(inp)
+        initial_state = [dec_hidden, dec_carry]
         dec_input = tf.expand_dims([tgt_tokenizer.token_to_id('<start>')] * len(inp), 1)
-        initial_state = [dec_hidden, dec_hidden]
 
         result = ''
         
@@ -199,19 +204,13 @@ def main():
     WORD_EMBED_SIZE = 128
     VOCAB_SIZE = 50000
     BATCH_SIZE = 64
-    EPOCHS = 3
+    EPOCHS = 2
 
     dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, 
                                                                                                          num_examples=None, 
                                                                                                          batch_size=BATCH_SIZE, 
                                                                                                          use_hgft=True)
     model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
-
-    with open('./hgf_tokenizers/src_tokenizer.cpkl', 'wb') as fp:
-        pickle.dump(src_tokenizer, fp)
-
-    with open('./hgf_tokenizers/tgt_tokenizer.cpkl', 'wb') as fp:
-        pickle.dump(tgt_tokenizer, fp)
 
     checkpoint_dir = './training_checkpoints'
     checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")

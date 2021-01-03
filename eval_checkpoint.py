@@ -40,19 +40,19 @@ checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
 restorepath = os.path.join(ckpt_dir, ckpt_prefix)
 checkpoint.restore(restorepath)
 
-source = create_dataset('../org_data/test.src.txt')
-target = create_dataset('../org_data/test.tgt.txt')
+source = create_dataset('../multistep-retrieve-summarize/data/gigawords/org_data/test.src.txt')
+target = create_dataset('../multistep-retrieve-summarize/data/gigawords/org_data/test.tgt.txt')
 assert len(source) == len(target)
 
 towrite = []
 counter = 0
 for s, t in tqdm(zip(source, target), total=len(source)):
-    sequence = np.array(src_tokenizer.texts_to_sequences([s]*5))
+    sequence = np.array([src_tokenizer.encode(s).ids for _ in range(5)])
     # pred = model.evaluate(sequence[:1], tokenizer, max_targ_len)
 
     # Trying beam-search ...
     beamids = run_beam_search(model, tgt_tokenizer, sequence).tokens[1:-1]
-    pred = tgt_tokenizer.sequences_to_texts([beamids])[0]
+    pred = tgt_tokenizer.decode(beamids)
 
     towrite.append(pred.strip())
 
