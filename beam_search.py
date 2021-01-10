@@ -86,9 +86,10 @@ def run_beam_search(model, vocab, batch):
   """
   # Run the encoder to get the encoder hidden states and decoder initial state
   # enc_states, dec_in_state = model.run_encoder(batch)
-  enc_states = model.encoder(batch)
+  enc_states, dec_hidden, dec_carry = model.encoder(batch)
   # dec_in_state is a LSTMStateTuple TODO: I missed this!! It should be a map of the BiLSTM hidden states ...
-  dec_in_state = model.decoder.reset_state(1)
+  # dec_in_state = model.decoder.reset_state(1)
+  dec_in_state = tf.expand_dims(dec_hidden[0], 0)
   # enc_states has shape [batch_size, <=max_enc_steps, 2*hidden_dim].
 
   # Initialize beam_size-many hyptheses
@@ -96,7 +97,7 @@ def run_beam_search(model, vocab, batch):
                      log_probs=[0.0],
                      state=dec_in_state) for _ in range(FLAGS.beam_size)]
   results = [] # this will contain finished hypotheses (those that have emitted the [STOP] token)
-  initial_state = [model.decoder.reset_state(len(batch))] * 2
+  initial_state = [dec_hidden, dec_carry]
 
   steps = 0
   while steps < FLAGS.max_dec_steps and len(results) < FLAGS.beam_size:
