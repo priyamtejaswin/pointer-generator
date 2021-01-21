@@ -29,10 +29,16 @@ tf.config.experimental.set_memory_growth(physical_devices[1], enable=True)
 
 
 class BiLSTMEncoder(tf.keras.Model):
-    def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000):
+    def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000, pretr_src_embeds=None):
         super(BiLSTMEncoder, self).__init__()
 
-        self.embedding = tf.keras.layers.Embedding(vocab_size, word_embed_size)
+        if pretr_src_embeds is None:
+            initializer = 'uniform'
+        else:
+            initializer = tf.keras.initializers.Constant(pretr_src_embeds)
+            print("Setting pre-trained embeddings for Encoder.")
+
+        self.embedding = tf.keras.layers.Embedding(vocab_size, word_embed_size, embeddings_initializer=initializer)
         self.encoder = tf.keras.layers.Bidirectional(
             tf.keras.layers.LSTM(lstm_embed_size, return_sequences=True, return_state=True)
         )
@@ -81,10 +87,16 @@ class BahdanauAttention(tf.keras.layers.Layer):
 
     
 class LSTMDecoder(tf.keras.Model):
-    def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000):
+    def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000, pretr_tgt_embeds=None):
         super(LSTMDecoder, self).__init__()
 
-        self.embedding = tf.keras.layers.Embedding(vocab_size, word_embed_size)
+        if pretr_tgt_embeds is None:
+            initializer = 'uniform'
+        else:
+            initializer = tf.keras.initializers.Constant(pretr_tgt_embeds)
+            print("Setting pre-trained embeddings for Decoder.")
+
+        self.embedding = tf.keras.layers.Embedding(vocab_size, word_embed_size, embeddings_initializer=initializer)
         self.decoder = tf.keras.layers.LSTM(lstm_embed_size, return_sequences=True, return_state=True)
         self.attention = BahdanauAttention(512)
         self.fc = tf.keras.layers.Dense(vocab_size)
@@ -128,11 +140,11 @@ class LSTMDecoder(tf.keras.Model):
 
 
 class S2SModel(tf.keras.Model):
-    def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000, batch_size=32):
+    def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000, batch_size=32, pretr_src_embeds=None, pretr_tgt_embeds=None):
         super(S2SModel, self).__init__()
 
-        self.encoder = BiLSTMEncoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size)
-        self.decoder = LSTMDecoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size)
+        self.encoder = BiLSTMEncoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size, pretr_src_embeds=pretr_src_embeds)
+        self.decoder = LSTMDecoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size, pretr_tgt_embeds=pretr_tgt_embeds)
         self.batch_size = batch_size
         self.optimizer = tf.keras.optimizers.Adam()
         self.loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
@@ -153,7 +165,7 @@ class S2SModel(tf.keras.Model):
         with tf.GradientTape() as tape:
             enc_output, dec_hidden, dec_carry = self.encoder(inp)
             initial_state = [dec_hidden, dec_carry]
-            dec_input = tf.expand_dims([tgt_tokenizer.token_to_id('<start>')] * self.batch_size, 1)
+            dec_input = tf.expand_dims([tgt_tokenizer.word_index['<start>']] * self.batch_size, 1)
 
             for t in range(1, targ.shape[1]):
                 dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
@@ -179,14 +191,14 @@ class S2SModel(tf.keras.Model):
         assert len(inp.shape) == 2, "Should be of size [n, length]"
         enc_output, dec_hidden, dec_carry = self.encoder(inp)
         initial_state = [dec_hidden, dec_carry]
-        dec_input = tf.expand_dims([tgt_tokenizer.token_to_id('<start>')] * len(inp), 1)
+        dec_input = tf.expand_dims([tgt_tokenizer.word_index['<start>']] * len(inp), 1)
 
         result = ''
         
         for t in range(max_len-2):
             dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
             pred_id = tf.argmax(dec_preds[0]).numpy()
-            word = tgt_tokenizer.id_to_token(pred_id)
+            word = tgt_tokenizer.index_word[pred_id]
             if word == '<end>':
                 return result.strip()
             else:
@@ -199,18 +211,50 @@ class S2SModel(tf.keras.Model):
         return result
 
 
+def create_glove_matrix(tokenizer, path_to_vectors, vocab_size, word_embed_size):
+    lookup = {}
+    with open(path_to_vectors) as fp:
+        for line in fp.readlines():
+            row = line.strip().split()
+            word = row[0]
+            vec = np.array([float(x) for x in row[1:]])
+            lookup[word] = vec
+            assert word == word.lower()
+
+        assert word_embed_size == len(vec), "Pre-trained embed size and desired embed sizes mismatch."
+
+    print("Found %d pre-trained words." % len(lookup))
+    print("Found %d tokens in vocab." % len(tokenizer.word_index))
+    ru_init = tf.random_uniform_initializer()
+    matrix = ru_init(shape=[vocab_size, word_embed_size]).numpy()
+
+    replaced = 0
+    for w, ix in tokenizer.word_index.items():
+        if w in lookup and ix < vocab_size:
+            matrix[ix] = lookup[w]
+            replaced += 1
+
+    print("Replaced %d words in matrxi." % replaced)
+    return matrix
+
+
 def main():
     LSTM_EMBED_SIZE = 256
-    WORD_EMBED_SIZE = 128
+    WORD_EMBED_SIZE = 100
     VOCAB_SIZE = 50000
     BATCH_SIZE = 64
-    EPOCHS = 2
+    EPOCHS = 5
 
-    dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, 
-                                                                                                         num_examples=None, 
-                                                                                                         batch_size=BATCH_SIZE, 
-                                                                                                         use_hgft=True)
-    model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
+    dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = wikibiodata(top_k=VOCAB_SIZE, 
+                                                                                                            num_examples=None, 
+                                                                                                            batch_size=BATCH_SIZE)
+    # Load and create Glove ...
+    embed_src = create_glove_matrix(src_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
+    embed_tgt = create_glove_matrix(tgt_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
+
+    # Create model ...
+    model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE,
+                        pretr_src_embeds=embed_src, pretr_tgt_embeds=embed_tgt)
 
     checkpoint_dir = './training_checkpoints'
     checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
@@ -231,14 +275,14 @@ def main():
             # avg_loss = total_loss/(batch+1)
             progbar.set_description("epoch: %d, avg loss: %.3f" % (epoch, batch_loss.numpy()))
 
-            if (batch+1)%50 == 0:
+            if (batch+1)%5 == 0:
                 with tboard_train_writer.as_default():
                     tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
 
-            if (batch+1)%1000 == 0:
-                print(src_tokenizer.decode(X_test[0]).replace(' ##', ''))
+            if (batch+1)%100 == 0:
+                print(src_tokenizer.sequences_to_texts(X_test[0:1]))
                 eval_ans = model.evaluate(X_test[0:1], tgt_tokenizer, max_targ_len)
-                print(tgt_tokenizer.decode(y_test[0]).replace(' ##', ''))
+                print(tgt_tokenizer.sequences_to_texts(y_test[0:1]))
                 print()
                 print(eval_ans)
                 checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
@@ -294,9 +338,139 @@ def create_dataset(path, num_examples=None):
     return words
 
 
+def create_wikievent_source(path, num_examples=None):
+    lines = io.open(path, encoding='UTF-8').read().strip().split('\n')[:num_examples]
+    entity_chain, sent_chain = [], []
+    for line in tqdm(lines):
+        entity, sentence = line.split('WIKISEP')
+        entity = entity.strip()
+        sentence = sentence.strip()
+
+        entity_chain.append(preprocess_sentence(entity))
+        sent_chain.append(preprocess_sentence(sentence))
+
+    assert len(entity_chain) == len(sent_chain) > 0
+    return entity_chain, sent_chain
+
+
+def create_wikievent_target(path, num_examples=None):
+    lines = io.open(path, encoding='UTF-8').read().strip().split('\n')[:num_examples]
+    assert len(lines) > 0
+    return [preprocess_sentence(l) for l in tqdm(lines)]
+
+
+def create_wikibio_target(sent_path, ids_path, num_examples=None):
+    lines = io.open(sent_path, encoding='UTF-8').read().strip().split('\n')
+    ids = [int(x) for x in io.open(ids_path, encoding='UTF-8').read().strip().split('\n')][:num_examples]
+
+    data = []
+    ix = 0
+    for n in tqdm(ids):
+        data.append('<start> ' + lines[ix] + ' <end>')
+        ix += n
+
+    return data
+
+def create_wikibio_source(path, num_examples=None):
+    sep = '<sep>'
+    lines = io.open(path, encoding='UTF-8').read().strip().split('\n')[:num_examples]
+    data = []
+    skip = []
+    for ix, l in tqdm(enumerate(lines), total=len(lines)):
+        clean = []
+        s, e = '', ''
+
+        for word in l.split():
+            if len(re.findall(':', word)) != 1:
+                continue
+
+            key, val = word.split(':')
+            if val != '<none>':
+                match = re.search(r'_[0-9]+$', key)
+                if match is None:
+                    clean.append(key)
+                    clean.append(val)
+                    clean.append(sep)
+
+                    s = ''
+                    e = ''
+                else:
+                    holder = key[:match.start()]
+                    if s:
+                        if s == holder:
+                            e += val + ' '
+                        else:
+                            clean.append(s)
+                            clean.append(e.strip())
+                            clean.append(sep)
+
+                            s = holder
+                            e = val + ' '
+
+                    else:
+                        s = holder
+                        e = val + ' '
+
+        if s:
+            clean.append(s)
+            clean.append(e.strip())
+            clean.append(sep)
+
+        data.append('<start> ' + ' '.join(clean).strip(sep).strip() + ' <end>')
+
+    return data
+
+
 def simple_load(path, num_examples=None):
     lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
     return ['<start> ' + l.strip().replace('#', '1') + ' <end>' for l in lines[:num_examples]]
+
+
+def wikibiodata(top_k, num_examples=None, batch_size=32):
+    maindir = '../wikipedia-biography-dataset/wikipedia-biography-dataset/'
+    path_train_src = os.path.join(maindir, 'train', 'train.box')
+    path_train_tgt = os.path.join(maindir, 'train', 'train.sent')
+    path_train_nbs = os.path.join(maindir, 'train', 'train.nb')
+
+    source = create_wikibio_source(path_train_src, num_examples)
+    target = create_wikibio_target(path_train_tgt, path_train_nbs, num_examples)
+
+    print("Source:", len(source))
+    print("Target:", len(target))
+    assert len(source) == len(target)
+
+    src_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
+    src_tokenizer.fit_on_texts(source)
+    # Set <pad> AFTER fitting on texts!
+    src_tokenizer.index_word[0] = '<pad>'
+    src_tokenizer.word_index['<pad>'] = 0
+
+    source_seqs = src_tokenizer.texts_to_sequences(source)
+    source_vecs = tf.keras.preprocessing.sequence.pad_sequences(source_seqs, padding='post')
+
+    # Now, for the target ...
+    tgt_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
+    tgt_tokenizer.fit_on_texts(target)
+    # Set <pad> AFTER fitting on texts!
+    tgt_tokenizer.index_word[0] = '<pad>'
+    tgt_tokenizer.word_index['<pad>'] = 0
+    target_seqs = tgt_tokenizer.texts_to_sequences(target)
+    target_vecs = tf.keras.preprocessing.sequence.pad_sequences(target_seqs, padding='post')
+
+    indices = list(range(len(source)))
+    random.shuffle(indices)
+    slice_index = int(len(indices) * 0.99)
+
+    X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
+    y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
+
+    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
+    dataset = dataset.batch(batch_size, drop_remainder=True)
+    dataset = dataset.prefetch(buffer_size=batch_size)
+
+    max_targ_len = target_vecs.shape[1]
+
+    return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, max_targ_len, (X_test, y_test)
 
 
 def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=False):
@@ -308,27 +482,31 @@ def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=False):
     max_target_seq_len
     (X_test, y_ytest) 
     """
-    maindir = '../multistep-retrieve-summarize/data/gigawords/org_data/'
-    path_train_src = os.path.join(maindir, 'train.src.txt')
-    path_train_tgt = os.path.join(maindir, 'train.tgt.txt')
+    maindir = '../WikiEvent'
+    path_train_src = os.path.join(maindir, 'train.src')
+    path_train_tgt = os.path.join(maindir, 'train.tgt')
 
     if use_hgft is False:
-        source = create_dataset(path_train_src, num_examples)
-        target = create_dataset(path_train_tgt, num_examples)
+        source, retrieved = create_wikievent_source(path_train_src, num_examples)
+        target = create_wikievent_target(path_train_tgt, num_examples)
 
-        print("source:", len(source))
-        print("target:", len(target))
+        print("source  :", len(source))
+        print("retrived:", len(retrieved))
+        print("target  :", len(target))
 
-        assert len(source) == len(target)
+        assert len(source) == len(retrieved) == len(target)
 
         src_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
-        src_tokenizer.fit_on_texts(source)
+        src_tokenizer.fit_on_texts(source + retrieved)
         # Set <pad> AFTER fitting on texts!
         src_tokenizer.index_word[0] = '<pad>'
         src_tokenizer.word_index['<pad>'] = 0
 
         source_seqs = src_tokenizer.texts_to_sequences(source)
         source_vecs = tf.keras.preprocessing.sequence.pad_sequences(source_seqs, padding='post')
+
+        retrvd_seqs = src_tokenizer.texts_to_sequences(retrieved)
+        retrvd_vecs = tf.keras.preprocessing.sequence.pad_sequences(retrvd_seqs, padding='post')
 
         # Now, for the target ...
         tgt_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
@@ -341,16 +519,19 @@ def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=False):
 
         indices = list(range(len(source)))
         random.shuffle(indices)
-        slice_index = int(len(indices) * 0.9995)
+        slice_index = int(len(indices) * 0.99)
 
         X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
+        r_train, r_test = retrvd_vecs[:slice_index], retrvd_vecs[slice_index:]
         y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
 
-        dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
+        dataset = tf.data.Dataset.from_tensor_slices((X_train, r_train, y_train)).shuffle(len(X_train))
         dataset = dataset.batch(batch_size, drop_remainder=True)
         dataset = dataset.prefetch(buffer_size=batch_size)
 
         max_targ_len = target_vecs.shape[1]
+
+        return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, max_targ_len, (X_test, r_test, y_test)
 
     else:
         src_tokenizer = Tokenizer.from_file('hgf_tokenizers/tokenizer_train.src.txt_1.json')
@@ -385,7 +566,7 @@ def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=False):
 
         max_targ_len = max([len(r) for r in y_test])
 
-    return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, max_targ_len, (X_test, y_test)
+        return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, max_targ_len, (X_test, y_test)
 
 
 if __name__ == '__main__':

@@ -14,7 +14,7 @@ import pickle
 import numpy as np
 from tqdm import tqdm
 import tensorflow as tf
-from seq2seqwithatt import S2SModel, datastuff, create_dataset
+from seq2seqwithatt import S2SModel, datastuff, create_dataset, create_wikievent_source, create_wikievent_target
 from beam_search import run_beam_search
 
 
@@ -27,12 +27,12 @@ VOCAB_SIZE = 50000
 BATCH_SIZE = 64
 EPOCHS = 3
 
-# dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
-max_targ_len = 25
-with open('hgf_tokenizers/src_tokenizer.cpkl', 'rb') as fp:
-    src_tokenizer = pickle.load(fp)
-with open('hgf_tokenizers/tgt_tokenizer.cpkl', 'rb') as fp:
-    tgt_tokenizer = pickle.load(fp)
+dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, r_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
+# max_targ_len = 25
+# with open('hgf_tokenizers/src_tokenizer.cpkl', 'rb') as fp:
+#     src_tokenizer = pickle.load(fp)
+# with open('hgf_tokenizers/tgt_tokenizer.cpkl', 'rb') as fp:
+#     tgt_tokenizer = pickle.load(fp)
 
 model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
 
@@ -40,19 +40,20 @@ checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
 restorepath = os.path.join(ckpt_dir, ckpt_prefix)
 checkpoint.restore(restorepath)
 
-source = create_dataset('../multistep-retrieve-summarize/data/gigawords/org_data/test.src.txt')
-target = create_dataset('../multistep-retrieve-summarize/data/gigawords/org_data/test.tgt.txt')
+source, retrieved = create_wikievent_source('../WikiEvent/test.src')
+target = create_wikievent_target('../WikiEvent/test.tgt')
 assert len(source) == len(target)
 
 towrite = []
 counter = 0
 for s, t in tqdm(zip(source, target), total=len(source)):
-    sequence = np.array([src_tokenizer.encode(s).ids for _ in range(5)])
+    sequence = np.array([src_tokenizer.texts_to_sequences([s]) for _ in range(5)]).squeeze()
     # pred = model.evaluate(sequence[:1], tokenizer, max_targ_len)
 
     # Trying beam-search ...
-    beamids = run_beam_search(model, tgt_tokenizer, sequence).tokens[1:-1]
-    pred = tgt_tokenizer.decode(beamids)
+    beamids = run_beam_search(model, tgt_tokenizer, sequence)
+    # pred = tgt_tokenizer.decode(beamids)
+    pred = tgt_tokenizer.sequences_to_texts([beamids.tokens[1:-1]])[0]
 
     towrite.append(pred.strip())
 

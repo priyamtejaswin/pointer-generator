@@ -93,7 +93,7 @@ def run_beam_search(model, vocab, batch):
   # enc_states has shape [batch_size, <=max_enc_steps, 2*hidden_dim].
 
   # Initialize beam_size-many hyptheses
-  hyps = [Hypothesis(tokens=[vocab.token_to_id('<start>')],
+  hyps = [Hypothesis(tokens=[vocab.word_index['<start>']],
                      log_probs=[0.0],
                      state=dec_in_state) for _ in range(FLAGS.beam_size)]
   results = [] # this will contain finished hypotheses (those that have emitted the [STOP] token)
@@ -137,7 +137,7 @@ def run_beam_search(model, vocab, batch):
     # Filter and collect any hypotheses that have produced the end token.
     hyps = [] # will contain hypotheses for the next step
     for h in sort_hyps(all_hyps): # in order of most likely h
-      if h.latest_token == vocab.token_to_id('<end>'): # if stop token is reached...
+      if h.latest_token == vocab.word_index['<end>']: # if stop token is reached...
         # If this hypothesis is sufficiently long, put in results. Otherwise discard.
         if steps >= FLAGS.min_dec_steps:
           results.append(h)
