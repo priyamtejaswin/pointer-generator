@@ -242,7 +242,7 @@ def main():
     LSTM_EMBED_SIZE = 256
     WORD_EMBED_SIZE = 100
     VOCAB_SIZE = 50000
-    BATCH_SIZE = 64
+    BATCH_SIZE = 32
     EPOCHS = 5
 
     dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = wikibiodata(top_k=VOCAB_SIZE, 
@@ -359,14 +359,19 @@ def create_wikievent_target(path, num_examples=None):
     return [preprocess_sentence(l) for l in tqdm(lines)]
 
 
-def create_wikibio_target(sent_path, ids_path, num_examples=None):
+def create_wikibio_target(sent_path, ids_path, num_examples=None, truncate=True):
     lines = io.open(sent_path, encoding='UTF-8').read().strip().split('\n')
     ids = [int(x) for x in io.open(ids_path, encoding='UTF-8').read().strip().split('\n')][:num_examples]
 
     data = []
     ix = 0
     for n in tqdm(ids):
-        data.append('<start> ' + lines[ix] + ' <end>')
+        words = '<start> ' + lines[ix] + ' <end>'
+        if truncate:
+            words = ' '.join(words.split()[:30])
+        else:
+            words = ' '.join(words)
+        data.append(words)
         ix += n
 
     return data
@@ -375,7 +380,6 @@ def create_wikibio_source(path, num_examples=None):
     sep = '<sep>'
     lines = io.open(path, encoding='UTF-8').read().strip().split('\n')[:num_examples]
     data = []
-    skip = []
     for ix, l in tqdm(enumerate(lines), total=len(lines)):
         clean = []
         s, e = '', ''
@@ -416,7 +420,9 @@ def create_wikibio_source(path, num_examples=None):
             clean.append(e.strip())
             clean.append(sep)
 
-        data.append('<start> ' + ' '.join(clean).strip(sep).strip() + ' <end>')
+        tokens = '<start> ' + ' '.join(clean).strip(sep).strip() + ' <end>'
+        tokens = ' '.join(tokens.split()[:60])
+        data.append(tokens)
 
     return data
 

@@ -14,7 +14,7 @@ import pickle
 import numpy as np
 from tqdm import tqdm
 import tensorflow as tf
-from seq2seqwithatt import S2SModel, datastuff, create_dataset, create_wikievent_source, create_wikievent_target
+from seq2seqwithatt import S2SModel, datastuff, create_dataset, create_wikibio_source, create_wikibio_target, wikibiodata, create_glove_matrix
 from beam_search import run_beam_search
 
 
@@ -22,26 +22,33 @@ ckpt_dir, ckpt_prefix = sys.argv[1], sys.argv[2]
 assert os.path.isdir(ckpt_dir)
 
 LSTM_EMBED_SIZE = 256
-WORD_EMBED_SIZE = 128
+WORD_EMBED_SIZE = 100
 VOCAB_SIZE = 50000
-BATCH_SIZE = 64
-EPOCHS = 3
+BATCH_SIZE = 32
+EPOCHS = 5
 
-dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, r_test, y_test) = datastuff(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
-# max_targ_len = 25
-# with open('hgf_tokenizers/src_tokenizer.cpkl', 'rb') as fp:
-#     src_tokenizer = pickle.load(fp)
-# with open('hgf_tokenizers/tgt_tokenizer.cpkl', 'rb') as fp:
-#     tgt_tokenizer = pickle.load(fp)
+dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = wikibiodata(top_k=VOCAB_SIZE, 
+                                                                                                            num_examples=None, 
+                                                                                                            batch_size=BATCH_SIZE)
+# Load and create Glove ...
+embed_src = create_glove_matrix(src_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
+embed_tgt = create_glove_matrix(tgt_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
 
-model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE)
+# Create model ...
+model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE,
+                    pretr_src_embeds=embed_src, pretr_tgt_embeds=embed_tgt)
 
 checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
 restorepath = os.path.join(ckpt_dir, ckpt_prefix)
 checkpoint.restore(restorepath)
 
-source, retrieved = create_wikievent_source('../WikiEvent/test.src')
-target = create_wikievent_target('../WikiEvent/test.tgt')
+maindir = '../wikipedia-biography-dataset/wikipedia-biography-dataset/'
+path_train_src = os.path.join(maindir, 'test', 'test.box')
+path_train_tgt = os.path.join(maindir, 'test', 'test.sent')
+path_train_nbs = os.path.join(maindir, 'test', 'test.nb')
+
+source = create_wikibio_source(path_train_src, None)
+target = create_wikibio_target(path_train_tgt, path_train_nbs, num_examples=None, truncate=False)
 assert len(source) == len(target)
 
 towrite = []
