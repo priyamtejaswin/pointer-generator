@@ -27,9 +27,19 @@ VOCAB_SIZE = 50000
 BATCH_SIZE = 32
 EPOCHS = 5
 
+maindir = '../wikipedia-biography-dataset/wikipedia-biography-dataset/'
+path_train_src = os.path.join(maindir, 'test', 'test.box')
+path_train_tgt = os.path.join(maindir, 'test', 'test.sent')
+path_train_nbs = os.path.join(maindir, 'test', 'test.nb')
+
+source = create_wikibio_source(path_train_src, None)
+target = create_wikibio_target(path_train_tgt, path_train_nbs, num_examples=None, truncate=False)
+assert len(source) == len(target)
+
 dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = wikibiodata(top_k=VOCAB_SIZE, 
                                                                                                             num_examples=None, 
                                                                                                             batch_size=BATCH_SIZE)
+max_targ_len = 30
 # Load and create Glove ...
 embed_src = create_glove_matrix(src_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
 embed_tgt = create_glove_matrix(tgt_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
@@ -41,15 +51,6 @@ model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZ
 checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
 restorepath = os.path.join(ckpt_dir, ckpt_prefix)
 checkpoint.restore(restorepath)
-
-maindir = '../wikipedia-biography-dataset/wikipedia-biography-dataset/'
-path_train_src = os.path.join(maindir, 'test', 'test.box')
-path_train_tgt = os.path.join(maindir, 'test', 'test.sent')
-path_train_nbs = os.path.join(maindir, 'test', 'test.nb')
-
-source = create_wikibio_source(path_train_src, None)
-target = create_wikibio_target(path_train_tgt, path_train_nbs, num_examples=None, truncate=False)
-assert len(source) == len(target)
 
 towrite = []
 counter = 0

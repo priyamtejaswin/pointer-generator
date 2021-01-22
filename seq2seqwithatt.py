@@ -369,8 +369,7 @@ def create_wikibio_target(sent_path, ids_path, num_examples=None, truncate=True)
         words = '<start> ' + lines[ix] + ' <end>'
         if truncate:
             words = ' '.join(words.split()[:30])
-        else:
-            words = ' '.join(words)
+        
         data.append(words)
         ix += n
 
