@@ -36,9 +36,14 @@ source = create_wikibio_source(path_train_src, None)
 target = create_wikibio_target(path_train_tgt, path_train_nbs, num_examples=None, truncate=False)
 assert len(source) == len(target)
 
-dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = wikibiodata(top_k=VOCAB_SIZE, 
-                                                                                                            num_examples=None, 
-                                                                                                            batch_size=BATCH_SIZE)
+# dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = wikibiodata(top_k=VOCAB_SIZE, 
+#                                                                                                             num_examples=None, 
+#                                                                                                             batch_size=BATCH_SIZE)
+with open('hgf_tokenizers/src_tokenizer.cpkl', 'rb') as fp:
+    src_tokenizer = pickle.load(fp)
+with open('hgf_tokenizers/tgt_tokenizer.cpkl', 'rb') as fp:
+    tgt_tokenizer = pickle.load(fp)
+
 max_targ_len = 30
 # Load and create Glove ...
 embed_src = create_glove_matrix(src_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
@@ -71,8 +76,8 @@ for s, t in tqdm(zip(source, target), total=len(source)):
 
     counter += 1
 
-with open(restorepath+'.hypo', 'w') as fp:
-    fp.write('\n'.join(towrite) + '\n')
+    with open(restorepath+'.hypo', 'a') as fp:
+        fp.write(pred + '\n')
 
 # with open(restorepath+'.targ', 'w') as fp:
 #     fp.write('\n'.join([l.lstrip('<start>').rstrip('<end>').strip() for l in target]) + '\n')
