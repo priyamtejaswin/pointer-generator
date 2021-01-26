@@ -72,7 +72,6 @@ class Hypothesis(object):
     # normalize log probability by number of tokens (otherwise longer sequences always have lower probability)
     return self.log_prob / len(self.tokens)
 
-@tf.function
 def run_beam_search(model, vocab, batch):
   """Performs beam search decoding on the given example.
 
