@@ -501,39 +501,6 @@ def wikibiodata(top_k, num_examples=None, batch_size=32):
     dataset = create_tfdataset((source_vecs, target_vecs), batch_size=batch_size)
     return dataset, src_tokenizer, tgt_tokenizer, len(source)//batch_size
 
-    # src_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
-    # src_tokenizer.fit_on_texts(source)
-    # # Set <pad> AFTER fitting on texts!
-    # src_tokenizer.index_word[0] = '<pad>'
-    # src_tokenizer.word_index['<pad>'] = 0
-
-    # source_seqs = src_tokenizer.texts_to_sequences(source)
-    # source_vecs = tf.keras.preprocessing.sequence.pad_sequences(source_seqs, padding='post')
-
-    # # Now, for the target ...
-    # tgt_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
-    # tgt_tokenizer.fit_on_texts(target)
-    # # Set <pad> AFTER fitting on texts!
-    # tgt_tokenizer.index_word[0] = '<pad>'
-    # tgt_tokenizer.word_index['<pad>'] = 0
-    # target_seqs = tgt_tokenizer.texts_to_sequences(target)
-    # target_vecs = tf.keras.preprocessing.sequence.pad_sequences(target_seqs, padding='post')
-
-    # indices = list(range(len(source)))
-    # random.shuffle(indices)
-    # slice_index = int(len(indices) * 0.99)
-
-    # X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
-    # y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
-
-    # dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train), reshuffle_each_iteration=True)
-    # dataset = dataset.batch(batch_size, drop_remainder=True)
-    # dataset = dataset.prefetch(buffer_size=batch_size)
-
-    # max_targ_len = target_vecs.shape[1]
-
-    # return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, max_targ_len, (X_test, y_test)
-
 
 def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=False):
     """
