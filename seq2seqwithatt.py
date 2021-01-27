@@ -20,12 +20,13 @@ from tqdm import tqdm
 import unicodedata
 import numpy as np
 import tensorflow as tf
+import tensorflow_addons as tfa
 from tokenizers import Tokenizer
 
 
 physical_devices = tf.config.list_physical_devices('GPU')
-tf.config.experimental.set_memory_growth(physical_devices[0], enable=True)
-tf.config.experimental.set_memory_growth(physical_devices[1], enable=True)
+for phydev in physical_devices:
+    tf.config.experimental.set_memory_growth(phydev, enable=True)
 
 
 class BiLSTMEncoder(tf.keras.Model):
@@ -121,30 +122,77 @@ class LSTMDecoder(tf.keras.Model):
 
         return vocab, final_memory, final_carry
 
-        # # Compute attention.
-        # scores = tf.tanh(self.henc_dense(seq_outs) + tf.expand_dims(self.sdec_dense(carry), 1))
-        # logits = tf.linalg.matmul(scores, self.vatt)
-        # attention = tf.nn.softmax(logits, axis=1)
-
-        # # Context vector.
-        # context = tf.reduce_sum(seq_outs * attention, axis=1)
-        # combined = tf.concat([context, carry], axis=1)
-
-        # # Distribution over vocab.
-        # pvocab = tf.nn.softmax(self.linear_vocab(self.linear_first(combined)), axis=1)
-
-        # return pvocab, hidden, carry
 
     def reset_state(self, batch_size):
         return tf.zeros((batch_size, self.lstm_embed_size))
+
+
+class CellDecoder(tf.keras.Model):
+    def __init__(self, vocab_size, embedding_dim, dec_units, batch_sz, attention_type='luong'):
+        super(CellDecoder, self).__init__()
+        self.batch_sz = batch_sz
+        self.dec_units = dec_units
+        self.attention_type = attention_type
+
+        # Embedding Layer
+        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
+
+        #Final Dense layer on which softmax will be applied
+        self.fc = tf.keras.layers.Dense(vocab_size)
+
+        # Define the fundamental cell for decoder recurrent structure
+        self.decoder_rnn_cell = tf.keras.layers.LSTMCell(self.dec_units)
+
+        # Sampler
+        self.sampler = tfa.seq2seq.sampler.TrainingSampler()
+
+        # Create attention mechanism with memory = None
+        self.attention_mechanism = self.build_attention_mechanism(self.dec_units, 
+                                                                None, self.batch_sz*[35], self.attention_type)
+
+        # Wrap attention mechanism with the fundamental rnn cell of decoder
+        self.rnn_cell = self.build_rnn_cell(batch_sz)
+
+        # Define the decoder with respect to fundamental rnn cell
+        self.decoder = tfa.seq2seq.BasicDecoder(self.rnn_cell, sampler=self.sampler, output_layer=self.fc)
+
+
+    def build_rnn_cell(self, batch_sz):
+        rnn_cell = tfa.seq2seq.AttentionWrapper(self.decoder_rnn_cell, 
+                                    self.attention_mechanism, attention_layer_size=self.dec_units)
+        return rnn_cell
+
+    def build_attention_mechanism(self, dec_units, memory, memory_sequence_length, attention_type='luong'):
+        # ------------- #
+        # typ: Which sort of attention (Bahdanau, Luong)
+        # dec_units: final dimension of attention outputs 
+        # memory: encoder hidden states of shape (batch_size, max_length_input, enc_units)
+        # memory_sequence_length: 1d array of shape (batch_size) with every element set to max_length_input (for masking purpose)
+
+        if(attention_type=='bahdanau'):
+            return tfa.seq2seq.BahdanauAttention(units=dec_units, memory=memory, memory_sequence_length=memory_sequence_length)
+        else:
+            return tfa.seq2seq.LuongAttention(units=dec_units, memory=memory, memory_sequence_length=memory_sequence_length)
+
+    def build_initial_state(self, batch_sz, encoder_state, Dtype):
+        decoder_initial_state = self.rnn_cell.get_initial_state(batch_size=batch_sz, dtype=Dtype)
+        decoder_initial_state = decoder_initial_state.clone(cell_state=encoder_state)
+        return decoder_initial_state
+
+
+    def call(self, inputs, initial_state):
+        x = self.embedding(inputs)
+        outputs, _, _ = self.decoder(x, initial_state=initial_state, sequence_length=self.batch_sz*[35-1])
+        return outputs
 
 
 class S2SModel(tf.keras.Model):
     def __init__(self, lstm_embed_size=256, word_embed_size=128, vocab_size=50000, batch_size=32, pretr_src_embeds=None, pretr_tgt_embeds=None):
         super(S2SModel, self).__init__()
 
-        self.encoder = BiLSTMEncoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size, pretr_src_embeds=pretr_src_embeds)
-        self.decoder = LSTMDecoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size, pretr_tgt_embeds=pretr_tgt_embeds)
+        self.encoder = BiLSTMEncoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size)
+        # self.decoder = LSTMDecoder(lstm_embed_size=lstm_embed_size, word_embed_size=word_embed_size, vocab_size=vocab_size, pretr_tgt_embeds=pretr_tgt_embeds)
+        self.decoder = CellDecoder(vocab_size=vocab_size, embedding_dim=word_embed_size, dec_units=lstm_embed_size, batch_sz=batch_size)
         self.batch_size = batch_size
         self.optimizer = tf.keras.optimizers.Adam()
         self.loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
@@ -162,26 +210,38 @@ class S2SModel(tf.keras.Model):
     def train_step(self, inp, targ, tgt_tokenizer, update=True):
         loss = 0
 
+        # with tf.GradientTape() as tape:
+        #     enc_output, dec_hidden, dec_carry = self.encoder(inp)
+        #     initial_state = [dec_hidden, dec_carry]
+        #     dec_input = tf.expand_dims([tgt_tokenizer.word_index['<start>']] * self.batch_size, 1)
+
+        #     for t in range(1, targ.shape[1]):
+        #         dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
+        #         loss += self.loss_function(targ[:, t], dec_preds)
+
+        #         # For next timestep!
+        #         dec_input = tf.expand_dims(targ[:, t], 1)
+        #         initial_state = [dec_hidden, dec_carry]
+            
+        # batch_loss = loss * 1.0 / int(targ.shape[1])
+
         with tf.GradientTape() as tape:
             enc_output, dec_hidden, dec_carry = self.encoder(inp)
-            initial_state = [dec_hidden, dec_carry]
-            dec_input = tf.expand_dims([tgt_tokenizer.word_index['<start>']] * self.batch_size, 1)
+            dec_input = targ[:, :-1]
+            real = targ[:, 1:]
 
-            for t in range(1, targ.shape[1]):
-                dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
-                loss += self.loss_function(targ[:, t], dec_preds)
+            self.decoder.attention_mechanism.setup_memory(enc_output)
+            decoder_initial_state = self.decoder.build_initial_state(self.batch_size, [dec_hidden, dec_carry], tf.float32)
+            pred = self.decoder(dec_input, decoder_initial_state)
+            logits = pred.rnn_output
+            loss = self.loss_function(real, logits)
 
-                # For next timestep!
-                dec_input = tf.expand_dims(targ[:, t], 1)
-                initial_state = [dec_hidden, dec_carry]
-            
-        batch_loss = loss * 1.0 / int(targ.shape[1])
         if update:
             variables = self.trainable_variables
             gradients = tape.gradient(loss, variables)
             self.optimizer.apply_gradients(zip(gradients, variables))
 
-        return batch_loss
+        return loss
 
     
     def evaluate(self, inp, tgt_tokenizer, max_len):
@@ -247,7 +307,7 @@ def main():
     MAX_TARG_LEN = 35
 
     # Training data and tokenizers.    
-    dataset, src_tokenizer, tgt_tokenizer, steps_per_epoch = wikibiodata(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
+    dataset, src_tokenizer, tgt_tokenizer, steps_per_epoch = wikibiodata(top_k=VOCAB_SIZE, num_examples=10000, batch_size=BATCH_SIZE)
 
     # Validation data.
     valid_dir = '/projects/metis1/users/ptejaswi/wikipedia-biography-dataset/wikipedia-biography-dataset/valid'
@@ -288,26 +348,26 @@ def main():
                 with tboard_train_writer.as_default():
                     tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
 
-            if (batch+1)%100 == 0:
-                print(src_tokenizer.sequences_to_texts(valid_X[0:1]))
-                eval_ans = model.evaluate(valid_X[0:1], tgt_tokenizer, MAX_TARG_LEN)
-                print(tgt_tokenizer.sequences_to_texts(valid_y[0:1]))
-                print()
-                print(eval_ans)
-                checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
+            # if (batch+1)%100 == 0:
+            #     print(src_tokenizer.sequences_to_texts(valid_X[0:1]))
+            #     eval_ans = model.evaluate(valid_X[0:1], tgt_tokenizer, MAX_TARG_LEN)
+            #     print(tgt_tokenizer.sequences_to_texts(valid_y[0:1]))
+            #     print()
+            #     print(eval_ans)
+            #     checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
 
-                with tboard_train_writer.as_default():
-                    test_loss = 0
-                    norm = 0
-                    for i in range(0, min(2000, len(valid_X)), BATCH_SIZE):
-                        x = valid_X[i : i+BATCH_SIZE]
-                        y = valid_y[i : i+BATCH_SIZE]
+            #     with tboard_train_writer.as_default():
+            #         test_loss = 0
+            #         norm = 0
+            #         for i in range(0, min(2000, len(valid_X)), BATCH_SIZE):
+            #             x = valid_X[i : i+BATCH_SIZE]
+            #             y = valid_y[i : i+BATCH_SIZE]
 
-                        if len(x) == BATCH_SIZE:
-                            test_loss += model.train_step(x, y, tgt_tokenizer, update=False).numpy()
-                            norm += 1
+            #             if len(x) == BATCH_SIZE:
+            #                 test_loss += model.train_step(x, y, tgt_tokenizer, update=False).numpy()
+            #                 norm += 1
 
-                    tf.summary.scalar('valid-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
+            #         tf.summary.scalar('valid-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
 
     print("passed.")
 
@@ -481,8 +541,8 @@ def wikibiodata(top_k, num_examples=None, batch_size=32):
     path_train_tgt = os.path.join(maindir, 'train', 'train.sent')
     path_train_nbs = os.path.join(maindir, 'train', 'train.nb')
 
-    raw_source = load_text(path_train_src, num_examples)
-    raw_target = load_text(path_train_tgt, num_examples)
+    raw_source = load_text(path_train_src)
+    raw_target = load_text(path_train_tgt)
     nbs = [int(x) for x in load_text(path_train_nbs)]
     
     source = create_wikibio_source(raw_source)
