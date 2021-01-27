@@ -359,25 +359,60 @@ def create_wikievent_target(path, num_examples=None):
     return [preprocess_sentence(l) for l in tqdm(lines)]
 
 
-def create_wikibio_target(sent_path, ids_path, num_examples=None, truncate=True):
-    lines = io.open(sent_path, encoding='UTF-8').read().strip().split('\n')
-    ids = [int(x) for x in io.open(ids_path, encoding='UTF-8').read().strip().split('\n')][:num_examples]
+def load_text(path, num_examples=None):
+    return io.open(path, encoding='UTF-8').read().strip().split('\n')[:num_examples]
 
+
+def create_tokenizer(data, topk):
+    tkzr = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
+    tkzr.fit_on_texts(data)
+    tkzr.index_word[0] = '<pad>'
+    tkzr.word_index['<pad>'] = 0
+    return tkzr
+
+
+def create_sequences(data, tokenizer, pad=True):
+    seqs = tokenizer.texts_to_sequences(data)
+    if pad:
+        vecs = tf.keras.preprocessing.sequence.pad_sequences(seqs, padding='post')
+        return vecs
+    else:
+        return seqs
+
+
+def create_tfdataset(elements, batch_size):
+    """
+    elements: array of items to go in the dataset.
+    All should have same length.
+    """
+    assert len(elements) >= 2
+    _first = elements[0]
+    for e in elements:
+        assert len(_first) == len(e)
+
+    dataset = tf.data.Dataset.from_tensor_slices(elements)
+    dataset.shuffle(len(_first), reshuffle_each_iteration=True)
+    dataset = dataset.batch(batch_size, drop_remainder=True)
+    dataset = dataset.prefetch(buffer_size=batch_size)
+    return dataset
+
+
+def create_wikibio_target(lines, ids, truncate=True):
+    assert len(lines) == sum(ids)
     data = []
     ix = 0
     for n in tqdm(ids):
         words = '<start> ' + lines[ix] + ' <end>'
         if truncate:
-            words = ' '.join(words.split()[:30])
+            words = ' '.join(words.split()[:35])
         
         data.append(words)
         ix += n
 
     return data
 
-def create_wikibio_source(path, num_examples=None):
+def create_wikibio_source(lines):
     sep = '<sep>'
-    lines = io.open(path, encoding='UTF-8').read().strip().split('\n')[:num_examples]
     data = []
     for ix, l in tqdm(enumerate(lines), total=len(lines)):
         clean = []
@@ -420,7 +455,7 @@ def create_wikibio_source(path, num_examples=None):
             clean.append(sep)
 
         tokens = '<start> ' + ' '.join(clean).strip(sep).strip() + ' <end>'
-        tokens = ' '.join(tokens.split()[:60])
+        tokens = ' '.join(tokens.split()[:80])
         data.append(tokens)
 
     return data
@@ -437,12 +472,18 @@ def wikibiodata(top_k, num_examples=None, batch_size=32):
     path_train_tgt = os.path.join(maindir, 'train', 'train.sent')
     path_train_nbs = os.path.join(maindir, 'train', 'train.nb')
 
-    source = create_wikibio_source(path_train_src, num_examples)
-    target = create_wikibio_target(path_train_tgt, path_train_nbs, num_examples)
+    raw_source = load_text(path_train_src, num_examples)
+    raw_target = load_text(path_train_tgt, num_examples)
+    nbs = [int(x) for x in load_text(path_train_nbs)]
+    
+    source = create_wikibio_source(raw_source)
+    target = create_wikibio_target(raw_target, nbs)
 
     print("Source:", len(source))
     print("Target:", len(target))
     assert len(source) == len(target)
+    print("Passed.")
+    sys.exit(0)
 
     src_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
     src_tokenizer.fit_on_texts(source)
@@ -469,7 +510,7 @@ def wikibiodata(top_k, num_examples=None, batch_size=32):
     X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
     y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
 
-    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train))
+    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train), reshuffle_each_iteration=True)
     dataset = dataset.batch(batch_size, drop_remainder=True)
     dataset = dataset.prefetch(buffer_size=batch_size)
 
