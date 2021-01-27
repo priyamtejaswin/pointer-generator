@@ -244,11 +244,20 @@ def main():
     VOCAB_SIZE = 50000
     BATCH_SIZE = 32
     EPOCHS = 5
+    MAX_TARG_LEN = 35
 
-    dataset, (src_tokenizer, tgt_tokenizer), steps_per_epoch, max_targ_len, (X_test, y_test) = wikibiodata(top_k=VOCAB_SIZE, 
-                                                                                                            num_examples=None, 
-                                                                                                            batch_size=BATCH_SIZE)
-    # Load and create Glove ...
+    # Training data and tokenizers.    
+    dataset, src_tokenizer, tgt_tokenizer, steps_per_epoch = wikibiodata(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE)
+
+    # Validation data.
+    valid_dir = '/projects/metis1/users/ptejaswi/wikipedia-biography-dataset/wikipedia-biography-dataset/valid'
+    valid_source = create_wikibio_source(load_text(os.path.join(valid_dir, 'valid.box')))
+    valid_X = create_sequences(valid_source, src_tokenizer)
+    valid_nbs = [int(x) for x in load_text(os.path.join(valid_dir, 'valid.nb'))]
+    valid_target = create_wikibio_target(load_text(os.path.join(valid_dir, 'valid.sent')), valid_nbs)
+    valid_y = create_sequences(valid_target, tgt_tokenizer)
+
+    # Load and create Glove.
     embed_src = create_glove_matrix(src_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
     embed_tgt = create_glove_matrix(tgt_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
 
@@ -275,14 +284,14 @@ def main():
             # avg_loss = total_loss/(batch+1)
             progbar.set_description("epoch: %d, avg loss: %.3f" % (epoch, batch_loss.numpy()))
 
-            if (batch+1)%5 == 0:
+            if (batch+1)%10 == 0:
                 with tboard_train_writer.as_default():
                     tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
 
             if (batch+1)%100 == 0:
-                print(src_tokenizer.sequences_to_texts(X_test[0:1]))
-                eval_ans = model.evaluate(X_test[0:1], tgt_tokenizer, max_targ_len)
-                print(tgt_tokenizer.sequences_to_texts(y_test[0:1]))
+                print(src_tokenizer.sequences_to_texts(valid_X[0:1]))
+                eval_ans = model.evaluate(valid_X[0:1], tgt_tokenizer, MAX_TARG_LEN)
+                print(tgt_tokenizer.sequences_to_texts(valid_y[0:1]))
                 print()
                 print(eval_ans)
                 checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
@@ -290,15 +299,15 @@ def main():
                 with tboard_train_writer.as_default():
                     test_loss = 0
                     norm = 0
-                    for i in range(0, min(2000, len(X_test)), BATCH_SIZE):
-                        x = X_test[i : i+BATCH_SIZE]
-                        y = y_test[i : i+BATCH_SIZE]
+                    for i in range(0, min(2000, len(valid_X)), BATCH_SIZE):
+                        x = valid_X[i : i+BATCH_SIZE]
+                        y = valid_y[i : i+BATCH_SIZE]
 
                         if len(x) == BATCH_SIZE:
                             test_loss += model.train_step(x, y, tgt_tokenizer, update=False).numpy()
                             norm += 1
 
-                    tf.summary.scalar('test-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
+                    tf.summary.scalar('valid-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
 
     print("passed.")
 
@@ -363,7 +372,7 @@ def load_text(path, num_examples=None):
     return io.open(path, encoding='UTF-8').read().strip().split('\n')[:num_examples]
 
 
-def create_tokenizer(data, topk):
+def create_tokenizer(data, top_k):
     tkzr = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
     tkzr.fit_on_texts(data)
     tkzr.index_word[0] = '<pad>'
@@ -482,41 +491,48 @@ def wikibiodata(top_k, num_examples=None, batch_size=32):
     print("Source:", len(source))
     print("Target:", len(target))
     assert len(source) == len(target)
-    print("Passed.")
-    sys.exit(0)
 
-    src_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
-    src_tokenizer.fit_on_texts(source)
-    # Set <pad> AFTER fitting on texts!
-    src_tokenizer.index_word[0] = '<pad>'
-    src_tokenizer.word_index['<pad>'] = 0
+    src_tokenizer = create_tokenizer(source, top_k)
+    tgt_tokenizer = create_tokenizer(target, top_k)
 
-    source_seqs = src_tokenizer.texts_to_sequences(source)
-    source_vecs = tf.keras.preprocessing.sequence.pad_sequences(source_seqs, padding='post')
+    source_vecs = create_sequences(source, src_tokenizer)
+    target_vecs = create_sequences(target, tgt_tokenizer)
 
-    # Now, for the target ...
-    tgt_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
-    tgt_tokenizer.fit_on_texts(target)
-    # Set <pad> AFTER fitting on texts!
-    tgt_tokenizer.index_word[0] = '<pad>'
-    tgt_tokenizer.word_index['<pad>'] = 0
-    target_seqs = tgt_tokenizer.texts_to_sequences(target)
-    target_vecs = tf.keras.preprocessing.sequence.pad_sequences(target_seqs, padding='post')
+    dataset = create_tfdataset((source_vecs, target_vecs), batch_size=batch_size)
+    return dataset, src_tokenizer, tgt_tokenizer, len(source)//batch_size
 
-    indices = list(range(len(source)))
-    random.shuffle(indices)
-    slice_index = int(len(indices) * 0.99)
+    # src_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
+    # src_tokenizer.fit_on_texts(source)
+    # # Set <pad> AFTER fitting on texts!
+    # src_tokenizer.index_word[0] = '<pad>'
+    # src_tokenizer.word_index['<pad>'] = 0
 
-    X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
-    y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
+    # source_seqs = src_tokenizer.texts_to_sequences(source)
+    # source_vecs = tf.keras.preprocessing.sequence.pad_sequences(source_seqs, padding='post')
 
-    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train), reshuffle_each_iteration=True)
-    dataset = dataset.batch(batch_size, drop_remainder=True)
-    dataset = dataset.prefetch(buffer_size=batch_size)
+    # # Now, for the target ...
+    # tgt_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=top_k, oov_token='<unk>', filters=' ')
+    # tgt_tokenizer.fit_on_texts(target)
+    # # Set <pad> AFTER fitting on texts!
+    # tgt_tokenizer.index_word[0] = '<pad>'
+    # tgt_tokenizer.word_index['<pad>'] = 0
+    # target_seqs = tgt_tokenizer.texts_to_sequences(target)
+    # target_vecs = tf.keras.preprocessing.sequence.pad_sequences(target_seqs, padding='post')
 
-    max_targ_len = target_vecs.shape[1]
+    # indices = list(range(len(source)))
+    # random.shuffle(indices)
+    # slice_index = int(len(indices) * 0.99)
 
-    return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, max_targ_len, (X_test, y_test)
+    # X_train, X_test = source_vecs[:slice_index], source_vecs[slice_index:]
+    # y_train, y_test = target_vecs[:slice_index], target_vecs[slice_index:]
+
+    # dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train), reshuffle_each_iteration=True)
+    # dataset = dataset.batch(batch_size, drop_remainder=True)
+    # dataset = dataset.prefetch(buffer_size=batch_size)
+
+    # max_targ_len = target_vecs.shape[1]
+
+    # return dataset, (src_tokenizer, tgt_tokenizer), len(X_train)//batch_size, max_targ_len, (X_test, y_test)
 
 
 def datastuff(top_k, num_examples=None, batch_size=None, use_hgft=False):
