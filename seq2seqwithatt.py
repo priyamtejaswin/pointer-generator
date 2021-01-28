@@ -22,6 +22,7 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_addons as tfa
 from tokenizers import Tokenizer
+from evaluate_checkpoint import generate_output
 
 
 physical_devices = tf.config.list_physical_devices('GPU')
@@ -349,13 +350,15 @@ def main():
                     tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
 
             if (batch+1)%100 == 0:
-                # print(src_tokenizer.sequences_to_texts(valid_X[0:1]))
+                print(src_tokenizer.sequences_to_texts(valid_X[0:3]))
                 # eval_ans = model.evaluate(valid_X[0:1], tgt_tokenizer, MAX_TARG_LEN)
-                # print(tgt_tokenizer.sequences_to_texts(valid_y[0:1]))
-                # print()
-                # print(eval_ans)
+                eval_ans = generate_output(valid_X[0:3], model.encoder, model.decoder, LSTM_EMBED_SIZE, 
+                                            tgt_tokenizer.word_index['<start>'], tgt_tokenizer.word_index['<end>'])
+                print(tgt_tokenizer.sequences_to_texts(valid_y[0:3]))
+                print()
+                print(tgt_tokenizer.sequences_to_texts(eval_ans))
 
-                checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
+                # checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
 
                 with tboard_train_writer.as_default():
                     test_loss = 0
