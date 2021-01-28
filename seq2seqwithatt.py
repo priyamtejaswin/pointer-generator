@@ -348,26 +348,27 @@ def main():
                 with tboard_train_writer.as_default():
                     tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
 
-            # if (batch+1)%100 == 0:
-            #     print(src_tokenizer.sequences_to_texts(valid_X[0:1]))
-            #     eval_ans = model.evaluate(valid_X[0:1], tgt_tokenizer, MAX_TARG_LEN)
-            #     print(tgt_tokenizer.sequences_to_texts(valid_y[0:1]))
-            #     print()
-            #     print(eval_ans)
-            #     checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
+            if (batch+1)%100 == 0:
+                # print(src_tokenizer.sequences_to_texts(valid_X[0:1]))
+                # eval_ans = model.evaluate(valid_X[0:1], tgt_tokenizer, MAX_TARG_LEN)
+                # print(tgt_tokenizer.sequences_to_texts(valid_y[0:1]))
+                # print()
+                # print(eval_ans)
 
-            #     with tboard_train_writer.as_default():
-            #         test_loss = 0
-            #         norm = 0
-            #         for i in range(0, min(2000, len(valid_X)), BATCH_SIZE):
-            #             x = valid_X[i : i+BATCH_SIZE]
-            #             y = valid_y[i : i+BATCH_SIZE]
+                checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
 
-            #             if len(x) == BATCH_SIZE:
-            #                 test_loss += model.train_step(x, y, tgt_tokenizer, update=False).numpy()
-            #                 norm += 1
+                with tboard_train_writer.as_default():
+                    test_loss = 0
+                    norm = 0
+                    for i in range(0, min(2000, len(valid_X)), BATCH_SIZE):
+                        x = valid_X[i : i+BATCH_SIZE]
+                        y = valid_y[i : i+BATCH_SIZE]
 
-            #         tf.summary.scalar('valid-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
+                        if len(x) == BATCH_SIZE:
+                            test_loss += model.train_step(x, y, tgt_tokenizer, update=False).numpy()
+                            norm += 1
+
+                    tf.summary.scalar('valid-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
 
     print("passed.")
 
