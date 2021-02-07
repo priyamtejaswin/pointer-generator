@@ -18,6 +18,8 @@ import numpy as np
 from tqdm import tqdm
 import tensorflow as tf
 import tensorflow_addons as tfa
+# from seq2seqwithatt import S2SModel, wikibiodata, create_glove_matrix
+# from seq2seqwithatt import create_wikibio_source, create_wikibio_target, create_sequences, load_text
 
 
 def generate_output(seqs, encoder, decoder, units, start_index, end_index):
@@ -54,3 +56,54 @@ def generate_output(seqs, encoder, decoder, units, start_index, end_index):
 def main(ckpt_dir, ckpt_name):
     assert os.path.isdir(ckpt_dir)
 
+    LSTM_EMBED_SIZE = 256
+    WORD_EMBED_SIZE = 100
+    VOCAB_SIZE = 50000
+    BATCH_SIZE = 32
+    EPOCHS = 5
+    MAX_TARG_LEN = 35
+
+    _, src_tokenizer, tgt_tokenizer, _ = wikibiodata(top_k=VOCAB_SIZE, num_examples=None, batch_size=BATCH_SIZE, withdata=False)
+    embed_src = create_glove_matrix(src_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
+    embed_tgt = create_glove_matrix(tgt_tokenizer, '../glove/glove.6B.100d.txt', VOCAB_SIZE, WORD_EMBED_SIZE)
+
+    # Create model ...
+    model = S2SModel(lstm_embed_size=LSTM_EMBED_SIZE, word_embed_size=WORD_EMBED_SIZE, vocab_size=VOCAB_SIZE, batch_size=BATCH_SIZE,
+                        pretr_src_embeds=embed_src, pretr_tgt_embeds=embed_tgt)
+
+    checkpoint_dir = './training_checkpoints'
+    checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
+    checkpoint = tf.train.Checkpoint(optimizer=model.optimizer, model=model)
+    status = checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
+
+    # Validation data.
+    valid_dir = '../wikipedia-biography-dataset/wikipedia-biography-dataset/test'
+    valid_source = create_wikibio_source(load_text(os.path.join(valid_dir, 'test.box')))
+    valid_X = create_sequences(valid_source, src_tokenizer)
+    valid_nbs = [int(x) for x in load_text(os.path.join(valid_dir, 'test.nb'))]
+    valid_target = create_wikibio_target(load_text(os.path.join(valid_dir, 'test.sent')), valid_nbs)
+    valid_y = create_sequences(valid_target, tgt_tokenizer)
+
+    # print("Doesn't work without this ...", model.train_step(
+    #     valid_X[:BATCH_SIZE, :], valid_X[:BATCH_SIZE, :35], tgt_tokenizer, update=False))
+
+    towrite = []
+    INFER_SIZE = 5
+    progbar = tqdm(range(0, 25, INFER_SIZE), total=len(valid_X)//INFER_SIZE, desc='loss: ')
+    for i in progbar:
+        x = valid_X[i : i+INFER_SIZE]
+        y = valid_y[i : i+INFER_SIZE]
+
+        batch_loss = model.train_step(x, y, update=False)
+        progbar.set_description("loss: %.3f" % (batch_loss.numpy()))
+
+        if len(x) == INFER_SIZE:
+            eval_ans = generate_output(x, model.encoder, model.decoder, LSTM_EMBED_SIZE,
+                                                tgt_tokenizer.word_index['<start>'], tgt_tokenizer.word_index['<end>'])
+            preds = tgt_tokenizer.sequences_to_texts(eval_ans)
+            towrite.extend(preds)
+
+    
+if __name__ == '__main__':
+    ckpt_dir, ckpt_name = sys.argv[1], sys.argv[2]
+    main(ckpt_dir, ckpt_name)

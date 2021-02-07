@@ -27,7 +27,11 @@ from evaluate_checkpoint import generate_output
 
 physical_devices = tf.config.list_physical_devices('GPU')
 for phydev in physical_devices:
-    tf.config.experimental.set_memory_growth(phydev, enable=True)
+    # tf.config.experimental.set_memory_growth(phydev, enable=True)
+    tf.config.experimental.set_virtual_device_configuration(
+        phydev, 
+        [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=5120)]
+    )
 
 
 class BiLSTMEncoder(tf.keras.Model):
@@ -134,6 +138,7 @@ class CellDecoder(tf.keras.Model):
         self.batch_sz = batch_sz
         self.dec_units = dec_units
         self.attention_type = attention_type
+        self.max_length_output = 20
 
         # Embedding Layer
         self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
@@ -149,7 +154,7 @@ class CellDecoder(tf.keras.Model):
 
         # Create attention mechanism with memory = None
         self.attention_mechanism = self.build_attention_mechanism(self.dec_units, 
-                                                                None, self.batch_sz*[35], self.attention_type)
+                                                                None, self.batch_sz*[self.max_length_output], self.attention_type)
 
         # Wrap attention mechanism with the fundamental rnn cell of decoder
         self.rnn_cell = self.build_rnn_cell(batch_sz)
@@ -183,7 +188,7 @@ class CellDecoder(tf.keras.Model):
 
     def call(self, inputs, initial_state):
         x = self.embedding(inputs)
-        outputs, _, _ = self.decoder(x, initial_state=initial_state, sequence_length=self.batch_sz*[35-1])
+        outputs, _, _ = self.decoder(x, initial_state=initial_state, sequence_length=self.batch_sz*[self.max_length_output-1])
         return outputs
 
 
@@ -208,31 +213,18 @@ class S2SModel(tf.keras.Model):
 
 
     @tf.function
-    def train_step(self, inp, targ, tgt_tokenizer, update=True):
-        loss = 0
-
-        # with tf.GradientTape() as tape:
-        #     enc_output, dec_hidden, dec_carry = self.encoder(inp)
-        #     initial_state = [dec_hidden, dec_carry]
-        #     dec_input = tf.expand_dims([tgt_tokenizer.word_index['<start>']] * self.batch_size, 1)
-
-        #     for t in range(1, targ.shape[1]):
-        #         dec_preds, dec_hidden, dec_carry = self.decoder(enc_output, dec_input, dec_hidden, initial_state)
-        #         loss += self.loss_function(targ[:, t], dec_preds)
-
-        #         # For next timestep!
-        #         dec_input = tf.expand_dims(targ[:, t], 1)
-        #         initial_state = [dec_hidden, dec_carry]
-            
-        # batch_loss = loss * 1.0 / int(targ.shape[1])
-
+    def train_step(self, inp, targ, update=True):
+        """
+        Implements the model forward and backward.
+        Backward ONLY IF `update` is `True`.
+        """
         with tf.GradientTape() as tape:
             enc_output, dec_hidden, dec_carry = self.encoder(inp)
             dec_input = targ[:, :-1]
             real = targ[:, 1:]
 
             self.decoder.attention_mechanism.setup_memory(enc_output)
-            decoder_initial_state = self.decoder.build_initial_state(self.batch_size, [dec_hidden, dec_carry], tf.float32)
+            decoder_initial_state = self.decoder.build_initial_state(len(inp), [dec_hidden, dec_carry], tf.float32)
             pred = self.decoder(dec_input, decoder_initial_state)
             logits = pred.rnn_output
             loss = self.loss_function(real, logits)
@@ -305,13 +297,12 @@ def main():
     VOCAB_SIZE = 50000
     BATCH_SIZE = 32
     EPOCHS = 5
-    MAX_TARG_LEN = 35
 
     # Training data and tokenizers.    
     dataset, src_tokenizer, tgt_tokenizer, steps_per_epoch = wikibiodata(top_k=VOCAB_SIZE, num_examples=10000, batch_size=BATCH_SIZE)
 
     # Validation data.
-    valid_dir = '/projects/metis1/users/ptejaswi/wikipedia-biography-dataset/wikipedia-biography-dataset/valid'
+    valid_dir = '../wikipedia-biography-dataset/wikipedia-biography-dataset/valid'
     valid_source = create_wikibio_source(load_text(os.path.join(valid_dir, 'valid.box')))
     valid_X = create_sequences(valid_source, src_tokenizer)
     valid_nbs = [int(x) for x in load_text(os.path.join(valid_dir, 'valid.nb'))]
@@ -340,7 +331,7 @@ def main():
         progbar = tqdm(enumerate(dataset.take(steps_per_epoch)), total=steps_per_epoch, desc='epoch: , avg loss: ')
 
         for batch, (inp, targ) in progbar:
-            batch_loss = model.train_step(inp, targ, tgt_tokenizer)
+            batch_loss = model.train_step(inp, targ)
             # total_loss += batch_loss.numpy()
             # avg_loss = total_loss/(batch+1)
             progbar.set_description("epoch: %d, avg loss: %.3f" % (epoch, batch_loss.numpy()))
@@ -349,9 +340,8 @@ def main():
                 with tboard_train_writer.as_default():
                     tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
 
-            if (batch+1)%100 == 0:
+            if (batch+1)%50 == 0:
                 print(src_tokenizer.sequences_to_texts(valid_X[0:3]))
-                # eval_ans = model.evaluate(valid_X[0:1], tgt_tokenizer, MAX_TARG_LEN)
                 eval_ans = generate_output(valid_X[0:3], model.encoder, model.decoder, LSTM_EMBED_SIZE, 
                                             tgt_tokenizer.word_index['<start>'], tgt_tokenizer.word_index['<end>'])
                 print(tgt_tokenizer.sequences_to_texts(valid_y[0:3]))
@@ -360,16 +350,22 @@ def main():
 
                 # checkpoint.save(file_prefix = checkpoint_prefix + 'e%dstep%d'%(epoch, batch))
 
+                hypos = []
                 with tboard_train_writer.as_default():
                     test_loss = 0
                     norm = 0
-                    for i in range(0, min(2000, len(valid_X)), BATCH_SIZE):
-                        x = valid_X[i : i+BATCH_SIZE]
-                        y = valid_y[i : i+BATCH_SIZE]
+                    INFER_SIZE = 3
+                    for i in tqdm(range(100, len(valid_X), INFER_SIZE)):
+                        x = valid_X[i : i+INFER_SIZE]
+                        y = valid_y[i : i+INFER_SIZE]
 
-                        if len(x) == BATCH_SIZE:
-                            test_loss += model.train_step(x, y, tgt_tokenizer, update=False).numpy()
+                        if len(x) == INFER_SIZE:
+                            test_loss += model.train_step(x, y, update=False).numpy()
                             norm += 1
+                            eval_ans = generate_output(x, model.encoder, model.decoder, LSTM_EMBED_SIZE, 
+                                            tgt_tokenizer.word_index['<start>'], tgt_tokenizer.word_index['<end>'])
+                            hypos.extend(tgt_tokenizer.sequences_to_texts(eval_ans))
+                            print(eval_ans)
 
                     tf.summary.scalar('valid-loss', test_loss*1.0/norm, step=(epoch * steps_per_epoch + batch))
 
@@ -477,7 +473,7 @@ def create_wikibio_target(lines, ids, truncate=True):
     for n in tqdm(ids):
         words = '<start> ' + lines[ix] + ' <end>'
         if truncate:
-            words = ' '.join(words.split()[:35])
+            words = ' '.join(words.split()[:35])  # 35
         
         data.append(words)
         ix += n
@@ -539,7 +535,7 @@ def simple_load(path, num_examples=None):
     return ['<start> ' + l.strip().replace('#', '1') + ' <end>' for l in lines[:num_examples]]
 
 
-def wikibiodata(top_k, num_examples=None, batch_size=32):
+def wikibiodata(top_k, num_examples=None, batch_size=32, withdata=True):
     maindir = '../wikipedia-biography-dataset/wikipedia-biography-dataset/'
     path_train_src = os.path.join(maindir, 'train', 'train.box')
     path_train_tgt = os.path.join(maindir, 'train', 'train.sent')
@@ -562,7 +558,11 @@ def wikibiodata(top_k, num_examples=None, batch_size=32):
     source_vecs = create_sequences(source, src_tokenizer)
     target_vecs = create_sequences(target, tgt_tokenizer)
 
-    dataset = create_tfdataset((source_vecs, target_vecs), batch_size=batch_size)
+    if withdata:
+        dataset = create_tfdataset((source_vecs, target_vecs), batch_size=batch_size)
+    else:
+        dataset = None
+        
     return dataset, src_tokenizer, tgt_tokenizer, len(source)//batch_size
 
 
