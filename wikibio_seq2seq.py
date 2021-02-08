@@ -3,7 +3,7 @@
 
 # ## Overview
 # This notebook gives a brief introduction into the ***Sequence to Sequence Model Architecture***
-# In this noteboook you broadly cover four essential topics necessary for Neural Machine Translation:
+# In this noteboook you broadly cover four essential topics necessary for Neural Text Generation:
 # 
 # 
 # * **Data cleaning**
@@ -62,7 +62,7 @@ for phydev in physical_devices:
 # 1. ```train_dataset```  and ```val_dataset``` : ```tf.data.Dataset``` objects
 # 2. ```inp_lang_tokenizer``` and ```targ_lang_tokenizer``` : ```tf.keras.preprocessing.text.Tokenizer``` objects 
 
-# In[3]:
+# In[45]:
 
 
 class NMTDataset:
@@ -222,12 +222,12 @@ class NMTDataset:
         # input_tensor_train, input_tensor_val, target_tensor_train, target_tensor_val = train_test_split(input_tensor, target_tensor, test_size=0.2)
 
         train_dataset = tf.data.Dataset.from_tensor_slices((input_tensor, target_tensor))
-        train_dataset = train_dataset.shuffle(BUFFER_SIZE).batch(BATCH_SIZE, drop_remainder=True)
+        train_dataset = train_dataset.shuffle(len(input_tensor), reshuffle_each_iteration=True)                                     .batch(BATCH_SIZE, drop_remainder=True)                                     .prefetch(buffer_size=BATCH_SIZE)
 
         return train_dataset, self.inp_lang_tokenizer, self.targ_lang_tokenizer
 
 
-# In[4]:
+# In[5]:
 
 
 BUFFER_SIZE = 32000
@@ -240,20 +240,20 @@ train_dataset, inp_lang, targ_lang = dataset_creator.call('../wikipedia-biograph
                                                                        num_examples, BUFFER_SIZE, BATCH_SIZE)
 
 
-# In[5]:
+# In[6]:
 
 
 example_input_batch, example_target_batch = next(iter(train_dataset))
 example_input_batch.shape, example_target_batch.shape
 
 
-# In[6]:
+# In[7]:
 
 
 example_input_batch[0:1].numpy()
 
 
-# In[7]:
+# In[8]:
 
 
 inp_lang.sequences_to_texts(example_input_batch[:1].numpy())
@@ -261,11 +261,11 @@ inp_lang.sequences_to_texts(example_input_batch[:1].numpy())
 
 # ### Some important parameters
 
-# In[8]:
+# In[9]:
 
 
-vocab_inp_size = 50000+1#len(inp_lang.word_index)+1
-vocab_tar_size = 50000+1#len(targ_lang.word_index)+1
+vocab_inp_size = 70000+1#len(inp_lang.word_index)+1
+vocab_tar_size = 70000+1#len(targ_lang.word_index)+1
 max_length_input = example_input_batch.shape[1]
 max_length_output = example_target_batch.shape[1]
 
@@ -274,17 +274,17 @@ units = 512
 steps_per_epoch = 582659//BATCH_SIZE
 
 
-# In[9]:
+# In[10]:
 
 
 print("max_length_spanish, max_length_english, vocab_size_spanish, vocab_size_english")
 print(max_length_input, max_length_output, vocab_inp_size, vocab_tar_size)
 
 
-# In[10]:
+# In[24]:
 
 
-##### 
+##### Encoder definitions 
 
 class Encoder(tf.keras.Model):
     def __init__(self, vocab_size, embedding_dim, enc_units, batch_sz):
@@ -308,25 +308,58 @@ class Encoder(tf.keras.Model):
 
     def initialize_hidden_state(self):
         return [tf.zeros((self.batch_sz, self.enc_units)), tf.zeros((self.batch_sz, self.enc_units))] 
+    
+    
+class BiLSTMEncoder(tf.keras.Model):
+    def __init__(self, vocab_size, embedding_dim, enc_units, batch_sz):
+        super(BiLSTMEncoder, self).__init__()
+        self.batch_sz = batch_sz
+        self.enc_units = enc_units
+        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
+        
+        ## -------- BiLSTM layer in Encoder -------- ##
+        self.lstm_layer = tf.keras.layers.Bidirectional(
+            tf.keras.layers.LSTM(self.enc_units, recurrent_initializer='glorot_uniform',
+                                 return_sequences=True, return_state=True)
+        )
+        
+        ## -------- Hidden dense -------- ##
+        self.hid_dense = tf.keras.layers.Dense(self.enc_units)
+        
+        ## -------- Carry dense -------- ##
+        self.car_dense = tf.keras.layers.Dense(self.enc_units)
+
+        
+    def call(self, x, hidden):
+        x = self.embedding(x)
+        output, fh, fc, bh, bc = self.lstm_layer(x, initial_state=hidden)
+        hid = tf.concat([fh, bh], axis=-1)
+        car = tf.concat([fc, bc], axis=-1)
+        return output, self.hid_dense(hid), self.car_dense(car)
+    
+    def initialize_hidden_state(self):
+        return [tf.zeros((self.batch_sz, self.enc_units)), tf.zeros((self.batch_sz, self.enc_units))] * 2 
 
 
-# In[11]:
+# In[25]:
 
 
 ## Test Encoder Stack
 
-encoder = Encoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
+# encoder = Encoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
+encoder = BiLSTMEncoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
 
 
 # sample input
 sample_hidden = encoder.initialize_hidden_state()
+print ('Encoder init shapes: [fw_h, fw_c, bw_h, bw_c] {}'.format([_.shape for _ in sample_hidden]))
 sample_output, sample_h, sample_c = encoder(example_input_batch, sample_hidden)
 print ('Encoder output shape: (batch size, sequence length, units) {}'.format(sample_output.shape))
 print ('Encoder h vecotr shape: (batch size, units) {}'.format(sample_h.shape))
 print ('Encoder c vector shape: (batch size, units) {}'.format(sample_c.shape))
 
 
-# In[12]:
+# In[26]:
 
 
 class Decoder(tf.keras.Model):
@@ -390,7 +423,7 @@ class Decoder(tf.keras.Model):
     return outputs
 
 
-# In[13]:
+# In[27]:
 
 
 # Test decoder stack
@@ -408,7 +441,7 @@ print("Decoder Outputs Shape: ", sample_decoder_outputs.rnn_output.shape)
 
 # ## Define the optimizer and the loss function
 
-# In[14]:
+# In[28]:
 
 
 optimizer = tf.keras.optimizers.Adam()
@@ -428,7 +461,7 @@ def loss_function(real, pred):
 
 # ## Checkpoints (Object-based saving)
 
-# In[15]:
+# In[29]:
 
 
 checkpoint_dir = './training_checkpoints'
@@ -440,7 +473,7 @@ checkpoint = tf.train.Checkpoint(optimizer=optimizer,
 
 # ## One train_step operations
 
-# In[16]:
+# In[30]:
 
 
 @tf.function
@@ -473,10 +506,10 @@ def train_step(inp, targ, enc_hidden, update=True):
 
 # ## Train the model
 
-# In[17]:
+# In[31]:
 
 
-EPOCHS = 0
+EPOCHS = 3
 
 for epoch in range(EPOCHS):
   start = time.time()
@@ -498,7 +531,7 @@ for epoch in range(EPOCHS):
 # ## Use tf-addons BasicDecoder for decoding
 # 
 
-# In[28]:
+# In[34]:
 
 
 def evaluate_sentence(sentence):
@@ -528,7 +561,7 @@ def evaluate_sentence(sentence):
   inference_batch_size = inputs.shape[0]
   result = ''
 
-  enc_start_state = [tf.zeros((inference_batch_size, units)), tf.zeros((inference_batch_size,units))]
+  enc_start_state = [tf.zeros((inference_batch_size, units)), tf.zeros((inference_batch_size,units))] * 2
   enc_out, enc_h, enc_c = encoder(inputs, enc_start_state)
 
   dec_h = enc_h
@@ -574,20 +607,20 @@ def translate(sentence):
 checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
 
 
-# In[30]:
+# In[35]:
 
 
 # translate(u'hace mucho frio aqui.')
 translate('''type_1:pope	name_1:michael	name_2:iii	name_3:of	name_4:alexandria	title_1:56th	title_2:pope	title_3:of	title_4:alexandria	title_5:&	title_6:patriarch	title_7:of	title_8:the	title_9:see	title_10:of	title_11:st.	title_12:mark	image:<none>	caption:<none>	enthroned_1:25	enthroned_2:april	enthroned_3:880ended_1:16	ended_2:march	ended_3:907	predecessor_1:shenouda	predecessor_2:i	successor_1:gabriel	successor_2:i	ordination:<none>	consecration:<none>	birth_date:<none> 	birth_name:<none>	birth_place_1:egypt	death_date_1:16	death_date_2:march	death_date_3:907	buried_1:monastery	buried_2:of	buried_3:saint	buried_4:macarius  	buried_5:the	buried_6:great	nationality_1:egyptian	religion_1:coptic	religion_2:orthodox	religion_3:christian	residence_1:saint	residence_2:mark	residence_3:'s	residence_4:church	feast_day_1:16	feast_day_2:march	feast_day_3:-lrb-	feast_day_4:20	feast_day_5:baramhat	feast_day_6:in	feast_day_7:the	feast_day_8:coptic	feast_day_9:calendar	feast_day_10:-rrb-	alma_mater:<none>	signature:<none>	article_title_1:pope	article_title_2:michael	article_title_3:iii	article_title_4:of	article_title_5:alexandria''')
 
 
-# In[31]:
+# In[36]:
 
 
 translate('''name_1:paul\tname_2:f.\tname_3:whelan\timage:<none>\talt:<none>\tcaption:<none>\tbirth_name:<none>\tbirth_date:<none>\tbirth_place:<none>\tdeath_date:<none>\tdeath_place:<none>\tnationality:<none>\tother_names:<none>\tknown_for:<none>\toccupation_1:professor\toccupation_2:of\toccupation_3:computer\toccupation_4:vision\tarticle_title_1:paul\tarticle_title_2:f.\tarticle_title_3:whelan''')
 
 
-# In[24]:
+# In[37]:
 
 
 dataset_creator.create_wikibio_source(['''name_1:paul\tname_2:f.\tname_3:whelan\timage:<none>\talt:<none>\tcaption:<none>\tbirth_name:<none>\tbirth_date:<none>\tbirth_place:<none>\tdeath_date:<none>\tdeath_place:<none>\tnationality:<none>\tother_names:<none>\tknown_for:<none>\toccupation_1:professor\toccupation_2:of\toccupation_3:computer\toccupation_4:vision\tarticle_title_1:paul\tarticle_title_2:f.\tarticle_title_3:whelan'''])
@@ -674,52 +707,87 @@ def beam_translate(sentence):
 
 # ## Batch Decoding ...
 
-# In[40]:
+# In[38]:
 
 
-testX = dataset_creator.load_text('../wikipedia-biography-dataset/wikipedia-biography-dataset/test/test.box', 20000)
-testIds = [int(x) for x in dataset_creator.load_text('../wikipedia-biography-dataset/wikipedia-biography-dataset/test/test.nb', 20000)]
+testX = dataset_creator.load_text('../wikipedia-biography-dataset/wikipedia-biography-dataset/test/test.box')
+testIds = [int(x) for x in dataset_creator.load_text('../wikipedia-biography-dataset/wikipedia-biography-dataset/test/test.nb')]
 testTargs = dataset_creator.load_text('../wikipedia-biography-dataset/wikipedia-biography-dataset/test/test.sent', sum(testIds))
 testY = dataset_creator.create_wikibio_target(testTargs, testIds)
 assert len(testX) == len(testY)
 
 
-# In[42]:
+# In[39]:
 
 
 print(testX[0])
 
 
-# In[43]:
+# In[40]:
 
 
 print(testY[0])
 
 
-# In[44]:
+# In[41]:
 
 
 print(translate(testX[0]))
 
 
-# In[47]:
+# In[43]:
 
 
-towrite = []
-INFER_SIZE = 3
-for i in tqdm(range(0, len(testX), INFER_SIZE)):
+write_preds = []
+write_targs = []
+INFER_SIZE = 4
+
+for i in tqdm(range(0, 10, INFER_SIZE)):
     x, y = testX[i: i+INFER_SIZE], testY[i: i+INFER_SIZE]
     if len(x) == INFER_SIZE:
         hypo = evaluate_sentence(x)
         pred = targ_lang.sequences_to_texts(hypo)
-        towrite.extend(pred)
+        for text in pred:
+            clean = []
+            for w in text.split():
+                if w == '<start>':
+                    pass
+                elif w == '<end>':
+                    break
+                else:
+                    clean.append(w)
+                    
+            write_preds.append(' '.join(clean))
+            
+        for text in y:
+            clean = []
+            for w in text.split():
+                if w == '<start>':
+                    pass
+                elif w == '<end>':
+                    break
+                else:
+                    clean.append(w)
+                    
+            write_targs.append(' '.join(clean))
+
+
+# In[44]:
+
+
+with open('./results/wikibio_basicdecoder_hypos.txt', 'w') as fp:
+    fp.write('\n'.join(write_preds) + '\n')
+    
+print("\nHypos written to disk.")
+
+with open('./results/wikibio_basicdecoder_targets.txt', 'w') as fp:
+    fp.write('\n'.join(write_targs) + '\n')
+    
+print("\nTargets written to disk.")
 
 
 # In[ ]:
 
 
-with open('./results/wikibio_basicdecoder_hypos.txt', 'w') as fp:
-    fp.write('\n'.join(towrite) + '\n')
-    
-print("\nHypos written to disk.")
+
 
