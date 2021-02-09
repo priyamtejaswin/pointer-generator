@@ -509,7 +509,7 @@ def train_step(inp, targ, enc_hidden, update=True):
 # In[31]:
 
 
-EPOCHS = 3
+EPOCHS = 0
 
 for epoch in range(EPOCHS):
   start = time.time()
@@ -742,7 +742,7 @@ write_preds = []
 write_targs = []
 INFER_SIZE = 4
 
-for i in tqdm(range(0, 10, INFER_SIZE)):
+for i in tqdm(range(0, len(testX), INFER_SIZE)):
     x, y = testX[i: i+INFER_SIZE], testY[i: i+INFER_SIZE]
     if len(x) == INFER_SIZE:
         hypo = evaluate_sentence(x)
