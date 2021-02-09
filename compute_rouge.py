@@ -67,7 +67,8 @@ def main(target_file, pred_file,
     print("Running ROUGE ...")
     command = ['python', '-m', 'rouge_score.rouge', '--target_filepattern=%s'\
         %path_targets, '--prediction_filepattern=%s'%path_preds,
-        '--output_filename=%s'%scores_file, '--use_stemmer=true']
+        '--output_filename=%s'%scores_file, '--use_stemmer=true',
+        '--rouge_types=rouge1,rouge2,rouge4,rougeL']
     print(command)
     subprocess.run(command)
 
