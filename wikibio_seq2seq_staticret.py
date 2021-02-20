@@ -32,6 +32,7 @@ import numpy as np
 import os
 import io
 import time
+import datetime
 
 from tqdm import tqdm
 
@@ -246,7 +247,8 @@ class NMTDataset:
         # input_tensor_train, input_tensor_val, target_tensor_train, target_tensor_val = train_test_split(input_tensor, target_tensor, test_size=0.2)
 
         train_dataset = tf.data.Dataset.from_tensor_slices((input_tensor, target_tensor))
-        train_dataset = train_dataset.shuffle(len(input_tensor), reshuffle_each_iteration=True)                                     .batch(BATCH_SIZE, drop_remainder=True)                                     .prefetch(buffer_size=BATCH_SIZE)
+        train_dataset = train_dataset.shuffle(len(input_tensor), reshuffle_each_iteration=True)
+        train_dataset = train_dataset.batch(BATCH_SIZE, drop_remainder=True).prefetch(buffer_size=BATCH_SIZE)
 
         return train_dataset, self.inp_lang_tokenizer, self.targ_lang_tokenizer
 
@@ -533,8 +535,11 @@ def train_step(inp, targ, enc_hidden, update=True):
 # In[31]:
 
 
-EPOCHS = 3
+tboard_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+tboard_train_log_dir = 'logs/' + tboard_time + '/wikibio-train'
+tboard_train_writer = tf.summary.create_file_writer(tboard_train_log_dir)
 
+EPOCHS = 3
 for epoch in range(EPOCHS):
   start = time.time()
 
@@ -547,6 +552,9 @@ for epoch in range(EPOCHS):
     total_loss += batch_loss
     
     progbar.set_description("epoch: %d, avg loss: %.3f" % (epoch, batch_loss.numpy()))
+    if (batch)%10 == 0:
+      with tboard_train_writer.as_default():
+          tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
     
   # saving (checkpoint) the model every 2 epochs
   checkpoint.save(file_prefix = checkpoint_prefix)
