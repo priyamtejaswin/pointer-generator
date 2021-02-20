@@ -101,7 +101,7 @@ class NMTDataset:
         indices: Line numbers corresponding to the answers file.
         """
         assert len(indices) == len(lines)
-        assert sum(indices) == len(answers)
+        assert indices[-1] == len(answers)
         
         prev = 0
         sep = '<sep>'
@@ -149,12 +149,13 @@ class NMTDataset:
             tokens = '<start> ' + ' '.join(clean).strip(sep).strip()
             tokens = ' '.join(tokens.split()[:80])
             
-            extra = answers[prev : prev+indices[ix]]
+            extra = answers[prev : indices[ix]]
             for ret in extra:
                 tokens += ' <ret> ' + ret
                 
-            tokens = ' '.join(tokens.split()[:500]) + ' <end>'
+            tokens = ' '.join(tokens.split()[:250]) + ' <end>'
             data.append(tokens)
+            prev = indices[ix]
 
         return data
     
@@ -203,9 +204,8 @@ class NMTDataset:
         path_ans = os.path.join(maindir, 'train', 'train.ans')
         path_howmany = os.path.join(maindir, 'train', 'train.ans.ix')
         howmany = [int(x) for x in self.load_text(path_howmany)[:num_examples]]
-        extra = self.load_text(path_ans)
         source = self.create_wikibio_source(self.load_text(path_train_src, num_examples=num_examples), 
-                                            self.load_text(path_ans, num_examples=sum(howmany)),
+                                            self.load_text(path_ans, num_examples=howmany[-1]),
                                             howmany)
         
         assert len(source) == len(target)
