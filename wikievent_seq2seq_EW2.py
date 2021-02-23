@@ -83,13 +83,14 @@ class NMTDataset:
     def create_wikievent_source(self, lines):
         data = []
         for ix, l in enumerate(lines):
-            clean = l.strip()
-            entities, sentences = clean.split('WIKISEP')
-            entities = entities.strip().lower()
-            sentences = sentences.strip().lower()
+            clean = l.strip().lower()
+            # entities, sentences = clean.split('WIKISEP')
+            # entities = entities.strip().lower()
+            # sentences = sentences.strip().lower()
+            # entities = '<start> ' + entities + ' <end>'
 
-            entities = '<start> ' + entities + ' <end>'
-            data.append(entities)
+            text = '<start> ' + ' '.join(clean.split()[:250]) + ' <end>'
+            data.append(text)
 
         return data
 
@@ -587,7 +588,7 @@ tboard_train_log_dir = 'logs/' + tboard_time + '/wikievent'
 tboard_train_writer = tf.summary.create_file_writer(tboard_train_log_dir)
 
 print("Starting main epoch loop ...")
-EPOCHS = 0
+EPOCHS = 10
 for epoch in range(EPOCHS):
   start = time.time()
 
