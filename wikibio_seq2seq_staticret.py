@@ -107,7 +107,7 @@ class NMTDataset:
         prev = 0
         sep = '<sep>'
         data = []
-        for ix, l in enumerate(lines):#, total=len(lines)):
+        for ix, l in tqdm(enumerate(lines), total=len(lines)):
             clean = []
             s, e = '', ''
 

@@ -7,3 +7,4 @@ hgf_tokenizers/
 logs/
 results/
 *.ipynb_checkpoints/
+wikievent_E_checkpoints/
