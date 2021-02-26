@@ -16,9 +16,9 @@
 
 """This file contains code to process data into batches"""
 
-import Queue
+# import Queue
 from random import shuffle
-from threading import Thread
+# from threading import Thread
 import time
 import numpy as np
 import tensorflow as tf
@@ -37,6 +37,7 @@ class Example(object):
       vocab: Vocabulary object
       hps: hyperparameters
     """
+    assert isinstance(abstract_sentences, list), "Has to be a list, not a string."
     self.hps = hps
 
     # Get ids of special tokens
@@ -44,7 +45,7 @@ class Example(object):
     stop_decoding = vocab.word2id(data.STOP_DECODING)
 
     # Process the article
-    article_words = article.split()
+    article_words = article.lower().strip().split()
     if len(article_words) > hps.max_enc_steps:
       article_words = article_words[:hps.max_enc_steps]
     self.enc_len = len(article_words) # store the length after truncation but before padding
@@ -52,7 +53,7 @@ class Example(object):
 
     # Process the abstract
     abstract = ' '.join(abstract_sentences) # string
-    abstract_words = abstract.split() # list of strings
+    abstract_words = abstract.lower().strip().split() # list of strings
     abs_ids = [vocab.word2id(w) for w in abstract_words] # list of word ids; OOVs are represented by the id for UNK token
 
     # Get the decoder input sequence and target sequence
