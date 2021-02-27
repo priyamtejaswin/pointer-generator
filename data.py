@@ -20,7 +20,7 @@ import glob
 import random
 import struct
 import csv
-from tensorflow.core.example import example_pb2
+# from tensorflow.core.example import example_pb2
 
 # <s> and </s> are used in the data files to segment the abstracts into sentences. They don't receive vocab ids.
 SENTENCE_START = '<s>'
@@ -103,6 +103,21 @@ class Vocab(object):
       writer = csv.DictWriter(f, delimiter="\t", fieldnames=fieldnames)
       for i in range(self.size()):
         writer.writerow({"word": self._id_to_word[i]})
+
+
+def paired_returner(src_data_path, tgt_data_path):
+  """
+  Returns paired data from the SOURCE file and TGT file.
+  """
+  print("Loading source data ...")
+  with open(src_data_path) as fp:
+    src = [l.strip() for l in fp.readlines()]
+  print("Loading target data ...")
+  with open(tgt_data_path) as fp:
+    tgt = [l.strip() for l in fp.readlines()]
+
+  assert len(src) == len(tgt), "Src and Tgt file have different lengths."
+  return zip(src, tgt)
 
 
 def example_generator(data_path, single_pass):

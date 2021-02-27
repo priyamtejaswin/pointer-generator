@@ -22,6 +22,7 @@ from random import shuffle
 import time
 import numpy as np
 import tensorflow as tf
+from tqdm import tqdm
 import data
 
 
@@ -215,6 +216,45 @@ class Batch(object):
     self.original_abstracts_sents = [ex.original_abstract_sents for ex in example_list] # list of list of lists
 
 
+class TFBatcher(object):
+  """
+  Returns a Tensorflow Dataset object, along with steps-per-epoch.
+  
+  Assumes entire dataset will fit in memory.
+  If this is not true, modify the generator.
+  """
+
+  def __init__(self, src_data_path, tgt_data_path, vocab, hps, batch_size=None):
+    """
+    Initialize the Dataset object.
+    All 
+    vocab: Common vocab Object for source and target.
+    hps: Hyperparameters.
+    """
+    self._src_data_path = src_data_path
+    self._tgt_data_path = tgt_data_path
+    self._vocab = vocab
+    self._hps = hps
+
+    self.batch_size = batch_size if batch_size is not None else self._hps.batch_size
+
+    # Load paired data ...
+    paired = data.paired_returner(self._src_data_path, self._tgt_data_path)
+    # Convert to Example objects ...
+    examples = [Example(a, [s], self._vocab, self._hps) for a, s in tqdm(paired)
+     if len(a)>10 and len(s)>10]
+
+    # Create dataset ...
+    dataset = tf.data.Dataset.from_tensors(examples)
+    dataset = dataset.shuffle(len(examples), reshuffle_each_iteration=True)
+    dataset = dataset.batch(self.batch_size, drop_remainder=True)
+    dataset = dataset.prefetch(buffer_size=self.batch_size)
+
+    # Save
+    self.steps_per_epoch = len(examples)//self.batch_size
+    self.dataset = dataset
+
+
 class Batcher(object):
   """A class to generate minibatches of data. Buckets examples together based on length of the encoder sequence."""
 
@@ -373,3 +413,23 @@ class Batcher(object):
         tf.logging.warning('Found an example with empty article text. Skipping it.')
       else:
         yield (article_text, abstract_text)
+
+
+class HPS(object):
+  """Dummy object for all Hyperparams"""
+  def __init__():
+    self.batch_size = 32
+
+if __name__ == '__main__':
+  hps = HPS()
+
+  vocab = data.Vocab(
+    '../WikiEvent/train.vocab', 150000
+  )
+
+  train = TFBatcher(
+    '../WikiEvent/train.src',
+    '../WikiEvent/train.tgt',
+    vocab,
+    hps
+  )
