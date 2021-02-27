@@ -168,7 +168,7 @@ class Batch(object):
     for i, ex in enumerate(example_list):
       self.enc_batch[i, :] = ex.enc_input[:]
       self.enc_lens[i] = ex.enc_len
-      for j in xrange(ex.enc_len):
+      for j in range(ex.enc_len):
         self.enc_padding_mask[i][j] = 1
 
     # For pointer-generator mode, need to store some extra info
@@ -205,7 +205,7 @@ class Batch(object):
     for i, ex in enumerate(example_list):
       self.dec_batch[i, :] = ex.dec_input[:]
       self.target_batch[i, :] = ex.target[:]
-      for j in xrange(ex.dec_len):
+      for j in range(ex.dec_len):
         self.dec_padding_mask[i][j] = 1
 
   def store_orig_strings(self, example_list):
