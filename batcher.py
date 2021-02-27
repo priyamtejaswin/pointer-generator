@@ -417,8 +417,11 @@ class Batcher(object):
 
 class HPS(object):
   """Dummy object for all Hyperparams"""
-  def __init__():
+  def __init__(self ):
     self.batch_size = 32
+    self.max_enc_steps = 120
+    self.max_dec_steps = 40
+    self.pointer_gen = True
 
 if __name__ == '__main__':
   hps = HPS()
