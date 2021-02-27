@@ -17,6 +17,7 @@
 """This file contains code to process data into batches"""
 
 # import Queue
+from functools import partial
 from random import shuffle
 # from threading import Thread
 import time
@@ -239,20 +240,38 @@ class TFBatcher(object):
     self.batch_size = batch_size if batch_size is not None else self._hps.batch_size
 
     # Load paired data ...
-    paired = data.paired_returner(self._src_data_path, self._tgt_data_path)
-    # Convert to Example objects ...
-    examples = [Example(a, [s], self._vocab, self._hps) for a, s in tqdm(paired)
-     if len(a)>10 and len(s)>10]
+    source, target = data.paired_returner(self._src_data_path, self._tgt_data_path)
+    # # Convert to Example objects ...
+    # examples = [Example(a, [s], self._vocab, self._hps) for a, s in tqdm(paired)
+    #  if len(a)>10 and len(s)>10]
 
+    custom = partial(self.make_batch, hps=self._hps, vocab=self._vocab)
     # Create dataset ...
-    dataset = tf.data.Dataset.from_tensors(examples)
-    dataset = dataset.shuffle(len(examples), reshuffle_each_iteration=True)
+    dataset = tf.data.Dataset.from_tensor_slices((source, target))
+    dataset = dataset.shuffle(len(source), reshuffle_each_iteration=True)
     dataset = dataset.batch(self.batch_size, drop_remainder=True)
+    dataset = dataset.map(custom)
     dataset = dataset.prefetch(buffer_size=self.batch_size)
 
     # Save
-    self.steps_per_epoch = len(examples)//self.batch_size
+    self.steps_per_epoch = len(source)//self.batch_size
     self.dataset = dataset
+
+  @staticmethod
+  def make_batch(x, y, hps, vocab):
+    """
+    Get a batch.
+    Convert pairs to Example objects.
+    Convert list of Example objects to Batch object.
+    Return Batch object.
+    """
+    print(x.numpy())
+    print(y.numpy())
+    examples = []
+    for i in range(len(x)):
+      examples.append(Example(x[i], [y[i]], vocab=vocab, hps=hps))
+
+    return Batch(examples, hps=hps, vocab=vocab)
 
 
 class Batcher(object):

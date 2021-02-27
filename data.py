@@ -117,7 +117,7 @@ def paired_returner(src_data_path, tgt_data_path):
     tgt = [l.strip() for l in fp.readlines()]
 
   assert len(src) == len(tgt), "Src and Tgt file have different lengths."
-  return zip(src, tgt)
+  return src, tgt
 
 
 def example_generator(data_path, single_pass):
