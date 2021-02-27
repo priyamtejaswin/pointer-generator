@@ -55,10 +55,10 @@ class Vocab(object):
 
     # Read the vocab file and add words up to max_size
     with open(vocab_file, 'r') as vocab_f:
-      for line in vocab_f:
-        pieces = line.split()
+      reader = csv.reader(vocab_f)
+      for pieces in reader:
         if len(pieces) != 2:
-          print('Warning: incorrectly formatted line in vocabulary file: %s\n' % line)
+          print('Warning: incorrectly formatted line in vocabulary file:', pieces)
           continue
         w = pieces[0]
         if w in [SENTENCE_START, SENTENCE_END, UNKNOWN_TOKEN, PAD_TOKEN, START_DECODING, STOP_DECODING]:
