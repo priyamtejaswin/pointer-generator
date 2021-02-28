@@ -504,4 +504,9 @@ if __name__ == '__main__':
       print("Count is %d; exiting." % count)
       break
 
+  from tqdm import tqdm
+  progbar = tqdm(enumerate(dataset.get()), total=100)
+  for ix, batch in progbar:
+    time.sleep(0.1)
+
   dataset.stop()
