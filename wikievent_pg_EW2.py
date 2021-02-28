@@ -277,7 +277,7 @@ BATCH_SIZE = 32
 
 hps = HPS()
 vocab = Vocab(
-    '../WikiEvent/train.vocab', 150000
+    '../WikiEvent/train.vocab', 80000
 )
 sequence = KerasBatcher(
     '../WikiEvent/train.src',
@@ -285,6 +285,7 @@ sequence = KerasBatcher(
     vocab,
     hps
 )
+steps_per_epoch = len(sequence)
 train_dataset = tf.keras.utils.OrderedEnqueuer(sequence, shuffle=True)
 
 example_bo = next(iter(sequence))
@@ -315,30 +316,6 @@ print(max_length_input, max_length_output, vocab.size())
 
 
 ##### Encoder definitions 
-class Encoder(tf.keras.Model):
-    def __init__(self, vocab_size, embedding_dim, enc_units, batch_sz):
-        super(Encoder, self).__init__()
-        self.batch_sz = batch_sz
-        self.enc_units = enc_units
-        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
-
-        ##-------- LSTM layer in Encoder ------- ##
-        self.lstm_layer = tf.keras.layers.LSTM(self.enc_units,
-                                       return_sequences=True,
-                                       return_state=True,
-                                       recurrent_initializer='glorot_uniform')
-
-
-
-    def call(self, x, hidden):
-        x = self.embedding(x)
-        output, h, c = self.lstm_layer(x, initial_state = hidden)
-        return output, h, c
-
-    def initialize_hidden_state(self):
-        return [tf.zeros((self.batch_sz, self.enc_units)), tf.zeros((self.batch_sz, self.enc_units))] 
-    
-    
 class BiLSTMEncoder(tf.keras.Model):
     def __init__(self, vocab_size, embedding_dim, enc_units, batch_sz):
         super(BiLSTMEncoder, self).__init__()
@@ -371,9 +348,8 @@ class BiLSTMEncoder(tf.keras.Model):
 
 
 ## Test Encoder Stack
-
-# encoder = Encoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
-encoder = BiLSTMEncoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
+# encoder = BiLSTMEncoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
+encoder = BiLSTMEncoder(vocab.size(), embedding_dim, units, hps.batch_size)
 
 
 # sample input
@@ -442,14 +418,14 @@ class Decoder(tf.keras.Model):
 
   def call(self, inputs, initial_state):
     x = self.embedding(inputs)
-    outputs, _, _ = self.decoder(x, initial_state=initial_state, sequence_length=self.batch_sz*[max_length_output-1])
+    outputs, _, _ = self.decoder(x, initial_state=initial_state, sequence_length=self.batch_sz*[max_length_output])
     return outputs
 
 
 # Test decoder stack
 
-decoder = Decoder(vocab_tar_size, embedding_dim, units, BATCH_SIZE, 'luong')
-sample_x = tf.random.uniform((BATCH_SIZE, max_length_output))
+decoder = Decoder(vocab.size(), embedding_dim, units, hps.batch_size, 'luong')
+sample_x = tf.random.uniform((hps.batch_size, max_length_output))
 decoder.attention_mechanism.setup_memory(sample_output)
 initial_state = decoder.build_initial_state(BATCH_SIZE, [sample_h, sample_c], tf.float32)
 
@@ -458,12 +434,10 @@ sample_decoder_outputs = decoder(sample_x, initial_state)
 
 print("Decoder Outputs Shape: ", sample_decoder_outputs.rnn_output.shape)
 
-
 # ## Define the optimizer and the loss function
-
 optimizer = tf.keras.optimizers.Adam()
 
-
+@tf.function
 def loss_function(real, pred):
   # real shape = (BATCH_SIZE, max_length_output)
   # pred shape = (BATCH_SIZE, max_length_output, tar_vocab_size )
@@ -477,7 +451,6 @@ def loss_function(real, pred):
 
 
 # ## Checkpoints (Object-based saving)
-
 checkpoint_dir = './training_checkpoints'
 checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 checkpoint = tf.train.Checkpoint(optimizer=optimizer,
@@ -486,17 +459,15 @@ checkpoint = tf.train.Checkpoint(optimizer=optimizer,
 
 
 # ## One train_step operations
-
 @tf.function
-def train_step(inp, targ, enc_hidden, update=True):
+def train_step(batch, enc_hidden, update=True):
   loss = 0
 
   with tf.GradientTape() as tape:
-    enc_output, enc_h, enc_c = encoder(inp, enc_hidden)
+    enc_output, enc_h, enc_c = encoder(batch.enc_batch, enc_hidden)
 
-
-    dec_input = targ[ : , :-1 ] # Ignore <end> token
-    real = targ[ : , 1: ]         # ignore <start> token
+    dec_input = batch.dec_batch  # Ignores [STOP] token
+    real = batch.target_batch  # Ignores [START] token
 
     # Set the AttentionMechanism object with encoder_outputs
     decoder.attention_mechanism.setup_memory(enc_output)
@@ -516,36 +487,34 @@ def train_step(inp, targ, enc_hidden, update=True):
 
 
 # ## Train the model
-
 tboard_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 tboard_train_log_dir = 'logs/' + tboard_time + '/wikievent'
 tboard_train_writer = tf.summary.create_file_writer(tboard_train_log_dir)
 
 print("Starting main epoch loop ...")
+train_dataset.start(workers=3, max_queue_size=BUFFER_SIZE)
 EPOCHS = 10
-for epoch in range(EPOCHS):
-  start = time.time()
+TOTAL = steps_per_epoch * EPOCHS
+enc_hidden = encoder.initialize_hidden_state()
 
-  enc_hidden = encoder.initialize_hidden_state()
-  total_loss = 0
+progbar = tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
+for ix, batch in progbar:
+    batch_loss = train_step(batch, enc_hidden, update=True)
+    progbar.set_description("avg loss: %.3f" % batch_loss.numpy())
+    
+    if ix % 10 == 0:
+        with tboard_train_writer.as_default():
+            tf.summary.scalar('train-loss', batch_loss.numpy(), step=ix)
+    
+    if ix%1000 == 0:
+        checkpoint.save(file_prefix = checkpoint_prefix)
 
-  progbar = tqdm(enumerate(train_dataset.take(steps_per_epoch)), total=steps_per_epoch, desc='epoch: , avg loss: ')
-  for (batch, (inp, targ)) in progbar:
-    batch_loss = train_step(inp, targ, enc_hidden, update=True)
-    total_loss += batch_loss
-    
-    progbar.set_description("epoch: %d, avg loss: %.3f" % (epoch, batch_loss.numpy()))
-    if (batch)%10 == 0:
-      with tboard_train_writer.as_default():
-          tf.summary.scalar('train-loss', batch_loss.numpy(), step=(epoch * steps_per_epoch + batch))
-    
-  # saving (checkpoint) the model every 2 epochs
-  checkpoint.save(file_prefix = checkpoint_prefix)
+    if (ix+1) == TOTAL:
+        print("Completed.")
+        break
 
 
 # ## Use tf-addons BasicDecoder for decoding
-# 
-
 def evaluate_sentence(sentence):
   """
   `sentence` is RAW!
