@@ -297,24 +297,24 @@ print(example_input_batch[0])
 print("First input tokens ...")
 print([vocab.id2word(i) for i in example_input_batch[0] if vocab.id2word(i) != vocab.PAD_TOKEN])
 
+print()
+print("First target ids ...")
+print(example_target_batch[0])
+print("First target tokens ...")
+print([vocab.id2word(i) for i in example_target_batch[0] if vocab.id2word(i) != vocab.PAD_TOKEN])
 
 # ### Some important parameters
-
-vocab_inp_size = 70000+1#len(inp_lang.word_index)+1
-vocab_tar_size = 70000+1#len(targ_lang.word_index)+1
 max_length_input = example_input_batch.shape[1]
 max_length_output = example_target_batch.shape[1]
 
 embedding_dim = 256
 units = 512
 
-
-print("max_length_spanish, max_length_english, vocab_size_spanish, vocab_size_english")
-print(max_length_input, max_length_output, vocab_inp_size, vocab_tar_size)
+print("max_length_source, max_length_target, vocab_size")
+print(max_length_input, max_length_output, vocab.size())
 
 
 ##### Encoder definitions 
-
 class Encoder(tf.keras.Model):
     def __init__(self, vocab_size, embedding_dim, enc_units, batch_sz):
         super(Encoder, self).__init__()
