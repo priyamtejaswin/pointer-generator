@@ -217,6 +217,44 @@ class Batch(object):
     self.original_abstracts_sents = [ex.original_abstract_sents for ex in example_list] # list of list of lists
 
 
+class KerasBatcher(tf.keras.utils.Sequence):
+  """
+  Writing a dataset Sequence object in Keras;
+  TF Data and Dataset API is horrible -- there is not support for any custom objects or structures.
+  Keras Sequence and OrderedSequence let you create datasets with parallel pre-processing.
+  """
+  def __init__(self, src_data_path, tgt_data_path, vocab, hps, batch_size=None):
+    self.src_data_path = src_data_path
+    self.tgt_data_path = tgt_data_path
+    self.vocab = vocab
+    self.hps = hps
+    self.batch_size = batch_size if batch_size is not None else hps.batch_size
+
+    self.source, self.target = data.paired_returner(self.src_data_path, self.tgt_data_path)
+
+  
+  def __len__(self):
+    return len(self.source) // self.batch_size
+
+  
+  def __getitem__(self, ix):
+    """
+    Create and return batch at position `ix`.
+    1. Collect raw text samples.
+    2. Convert raw pairs to Example objects.
+    3. Convert Example objects to a Batch object.
+    4. Return.
+    """
+    lower = ix * self.batch_size
+    upper = (ix + 1) * self.batch_size
+
+    batch_src = self.source[lower : upper]
+    batch_tgt = self.target[lower : upper]
+
+    examples = [Example(s, [t], self.vocab, self.hps) for s, t in zip(batch_src, batch_tgt)]
+    return Batch(example_list=examples, hps=self.hps, vocab=self.vocab)
+
+
 class TFBatcher(object):
   """
   Returns a Tensorflow Dataset object, along with steps-per-epoch.
@@ -449,9 +487,21 @@ if __name__ == '__main__':
     '../WikiEvent/train.vocab', 150000
   )
 
-  train = TFBatcher(
+  sequence = KerasBatcher(
     '../WikiEvent/train.src',
     '../WikiEvent/train.tgt',
     vocab,
     hps
   )
+
+  dataset = tf.keras.utils.OrderedEnqueuer(sequence, shuffle=True)
+  dataset.start(workers=3, max_queue_size=10)
+  count = 0
+  for batch in dataset.get():
+    print(batch.enc_batch)
+    count += 1
+    if count >= 50:
+      print("Count is %d; exiting." % count)
+      break
+
+  dataset.stop()

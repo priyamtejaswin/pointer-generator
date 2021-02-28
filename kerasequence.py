@@ -68,3 +68,5 @@ for a, b in ordenq.get():
     if count >= 10:
         print("Count is %d; exiting." % count)
         break
+
+ordenq.stop()
