@@ -40,15 +40,15 @@ class DummySequence(tf.keras.utils.Sequence):
         return [str(_) for _ in batch_x], batch_y
 
 
-    def on_epoch_end(self):
-        """
-        Called at every epoch end.
-        How does it know tho ...?
-        """
-        combined = list(zip(self.x, self.y))
-        random.shuffle(combined)
-        self.x, self.y = zip(*combined)
-        print("shuffled")
+    # def on_epoch_end(self):
+    #     """
+    #     Called at every epoch end.
+    #     How does it know tho ...?
+    #     """
+    #     combined = list(zip(self.x, self.y))
+    #     random.shuffle(combined)
+    #     self.x, self.y = zip(*combined)
+    #     print("shuffled")
 
 
 
@@ -58,10 +58,13 @@ y = [i**2 for i in x]
 dataset = DummySequence(x, y, 2)
 print(len(dataset))
 
-for epoch in range(3):
-    print('='*12 + str(epoch) + '='*12)
-    for batx, baty in dataset:
-        print(batx, baty)
-        print('-'*25)
+ordenq = tf.keras.utils.OrderedEnqueuer(dataset, shuffle=True)
+ordenq.start(workers=3, max_queue_size=15)
 
-    dataset.on_epoch_end()
+count = 0
+for a, b in ordenq.get():
+    print(a, b)
+    count += 1
+    if count >= 10:
+        print("Count is %d; exiting." % count)
+        break
