@@ -437,7 +437,6 @@ print("Decoder Outputs Shape: ", sample_decoder_outputs.rnn_output.shape)
 # ## Define the optimizer and the loss function
 optimizer = tf.keras.optimizers.Adam()
 
-@tf.function
 def loss_function(real, pred):
   # real shape = (BATCH_SIZE, max_length_output)
   # pred shape = (BATCH_SIZE, max_length_output, tar_vocab_size )
@@ -459,7 +458,7 @@ checkpoint = tf.train.Checkpoint(optimizer=optimizer,
 
 
 # ## One train_step operations
-@tf.function
+# @tf.function
 def train_step(batch, enc_hidden, update=True):
   loss = 0
 
