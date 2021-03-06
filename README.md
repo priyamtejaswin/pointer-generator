@@ -36,6 +36,7 @@ rougeL-F,0.630374,0.631814,0.633269
 Open-domain event text generation task.
 
 #### S2S-E
+Considers the entities only.
 ```
 score_type,low,mid,high
 rouge1-R,0.313428,0.319884,0.326313
@@ -50,4 +51,22 @@ rouge4-F,0.042332,0.046887,0.051742
 rougeL-R,0.265609,0.272080,0.277987
 rougeL-P,0.298885,0.305543,0.312448
 rougeL-F,0.275966,0.282179,0.288476
+```
+
+#### S2S-EW2
+Considers entities and supporting sentences as a single sequence (`max_len=120`).
+```
+score_type,low,mid,high
+rouge1-R,0.381582,0.388686,0.396485
+rouge1-P,0.367045,0.373815,0.381158
+rouge1-F,0.367159,0.373685,0.380720
+rouge2-R,0.195440,0.202547,0.210077
+rouge2-P,0.186044,0.192317,0.199767
+rouge2-F,0.186761,0.193084,0.200478
+rouge4-R,0.074683,0.080686,0.086981
+rouge4-P,0.069943,0.075140,0.081143
+rouge4-F,0.070509,0.075928,0.081925
+rougeL-R,0.326473,0.333815,0.341458
+rougeL-P,0.312558,0.319239,0.326027
+rougeL-F,0.313363,0.319964,0.326819
 ```

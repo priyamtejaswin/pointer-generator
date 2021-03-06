@@ -343,8 +343,10 @@ class BiLSTMEncoder(tf.keras.Model):
         car = tf.concat([fc, bc], axis=-1)
         return output, self.hid_dense(hid), self.car_dense(car)
     
-    def initialize_hidden_state(self):
-        return [tf.zeros((self.batch_sz, self.enc_units)), tf.zeros((self.batch_sz, self.enc_units))] * 2 
+    def initialize_hidden_state(self, size=None):
+        if size is None:
+            size = self.batch_sz
+        return [tf.zeros((size, self.enc_units)), tf.zeros((size, self.enc_units))] * 2 
 
 
 ## Test Encoder Stack
@@ -496,7 +498,7 @@ EPOCHS = 10
 TOTAL = steps_per_epoch * EPOCHS
 enc_hidden = encoder.initialize_hidden_state()
 
-progbar = tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
+progbar = [] #tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
 for ix, batch in progbar:
     batch_loss = train_step(batch, enc_hidden, update=True)
     progbar.set_description("avg loss: %.3f" % batch_loss.numpy())
@@ -511,6 +513,8 @@ for ix, batch in progbar:
     if (ix+1) == TOTAL:
         print("Completed.")
         break
+
+train_dataset.stop()
 
 
 # ## Use tf-addons BasicDecoder for decoding
@@ -597,26 +601,14 @@ checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
 # ## Use tf-addons BeamSearchDecoder 
 # 
 
-def beam_evaluate_sentence(sentence, beam_width=3):
-  if isinstance(sentence, str):
-    sentence = [sentence]
-
-  inputs = inp_lang.texts_to_sequences(dataset_creator.create_wikievent_source(sentence))
-  inputs = tf.keras.preprocessing.sequence.pad_sequences(inputs,
-                                                          maxlen=max_length_input,
-                                                          padding='post')
-  inputs = tf.convert_to_tensor(inputs)
+def beam_evaluate_sentence(inputs, start_id, end_id, beam_width=3):
   inference_batch_size = inputs.shape[0]
   result = ''
 
   enc_start_state = [tf.zeros((inference_batch_size, units)), tf.zeros((inference_batch_size,units))] * 2
   enc_out, enc_h, enc_c = encoder(inputs, enc_start_state)
 
-  dec_h = enc_h
-  dec_c = enc_c
-
-  start_tokens = tf.fill([inference_batch_size], targ_lang.word_index['<start>'])
-  end_token = targ_lang.word_index['<end>']
+  start_tokens = tf.fill([inference_batch_size], start_id)
 
   # From official documentation
   # NOTE If you are using the BeamSearchDecoder with a cell wrapped in AttentionWrapper, then you must ensure that:
@@ -638,7 +630,7 @@ def beam_evaluate_sentence(sentence, beam_width=3):
   decoder_embedding_matrix = decoder.embedding.variables[0]
 
   # The BeamSearchDecoder object's call() function takes care of everything.
-  outputs, final_state, sequence_lengths = decoder_instance(decoder_embedding_matrix, start_tokens=start_tokens, end_token=end_token, initial_state=decoder_initial_state)
+  outputs, final_state, sequence_lengths = decoder_instance(decoder_embedding_matrix, start_tokens=start_tokens, end_token=end_id, initial_state=decoder_initial_state)
   # outputs is tfa.seq2seq.FinalBeamSearchDecoderOutput object. 
   # The final beam predictions are stored in outputs.predicted_id
   # outputs.beam_search_decoder_output is a tfa.seq2seq.BeamSearchDecoderOutput object which keep tracks of beam_scores and parent_ids while performing a beam decoding step
@@ -655,22 +647,23 @@ def beam_evaluate_sentence(sentence, beam_width=3):
   return final_outputs.numpy(), beam_scores.numpy()
 
 
-def beam_translate(sentence):
-  result, beam_scores = beam_evaluate_sentence(sentence)
+def beam_translate(inputs, vocab):
+  start_id = vocab.word2id(vocab.START_DECODING)
+  end_id = vocab.word2id(vocab.STOP_DECODING)
+  result, beam_scores = beam_evaluate_sentence(inputs, start_id, end_id)
   # print(result.shape, beam_scores.shape)
   best = []
   for beam, score in zip(result, beam_scores):
     # print(beam.shape, score.shape)
-    output = targ_lang.sequences_to_texts(beam)
-    output = [a[:a.index('<end>')] if '<end>' in a else a for a in output]
+    output = [a[:np.where(a == end_id)[0][0]] if end_id in a else a for a in beam]
     beam_score = [a.sum() for a in score]
     # print('Input: %s' % (sentence))
     # for i in range(len(output)):
     #   print('{} Predicted translation: {}  {}'.format(i+1, output[i], beam_score[i]))
     best.append(output[np.argmin(beam_score)])
 
-  assert len(sentence) if type(sentence)==list else 1 == len(best)
-  return best
+  assert len(inputs) == len(best)
+  return [' '.join([vocab.id2word(x) for x in row]) for row in best]
 
 
 # ## Batch Decoding ...
@@ -680,62 +673,54 @@ def beam_translate(sentence):
 # testTargs = dataset_creator.load_text('../wikipedia-biography-dataset/wikipedia-biography-dataset/test/test.sent', sum(testIds))
 # testY = dataset_creator.create_wikibio_target(testTargs, testIds)
 
-testX = dataset_creator.load_text('../WikiEvent/test.src')
-testY = dataset_creator.load_text('../WikiEvent/test.tgt')
-assert len(testX) == len(testY)
 
-
-print(testX[0])
-
-
-print(testY[0])
-
-
-print(beam_translate(testX[0]))
-
+test_dataset = KerasBatcher(
+    '../WikiEvent/test.src',
+    '../WikiEvent/test.tgt',
+    vocab,
+    hps,
+    batch_size=5
+)
 
 write_preds = []
 write_targs = []
-INFER_SIZE = 4
-
 print("Evaluating test set ...")
-for i in tqdm(range(0, len(testX), INFER_SIZE)):
-    x, y = testX[i: i+INFER_SIZE], testY[i: i+INFER_SIZE]
-    if len(x) == INFER_SIZE:
-        hypo = beam_translate(x)
-        for text in hypo:
-            clean = []
-            for w in text.split():
-                if w == '<start>':
-                    pass
-                elif w == '<end>':
-                    break
-                else:
-                    clean.append(w)
-                    
-            write_preds.append(' '.join(clean))
-            
-        for text in y:
-            clean = []
-            for w in text.lower().split():
-                if w == '<start>':
-                    pass
-                elif w == '<end>':
-                    break
-                else:
-                    clean.append(w)
-                    
-            write_targs.append(' '.join(clean))
+for tbc in tqdm(test_dataset):
+    x, y = tbc.enc_batch, tbc.original_abstracts
+    hypo = beam_translate(x, vocab)
+    
+    for text in hypo:
+        clean = []
+        for w in text.split():
+            if w == vocab.START_DECODING:
+                pass
+            elif w == vocab.STOP_DECODING:
+                break
+            else:
+                clean.append(w)
+                
+        write_preds.append(' '.join(clean))
+        
+    for text in y:
+        clean = []
+        for w in text.lower().split():
+            if w == vocab.START_DECODING:
+                pass
+            elif w == vocab.STOP_DECODING:
+                break
+            else:
+                clean.append(w)
+                
+        write_targs.append(' '.join(clean))    
 
 
+# Save preds and truth to disk ...
 with open('./results/wikievent_noret_basicdecoder_hypos.txt', 'w') as fp:
     fp.write('\n'.join(write_preds) + '\n')
-    
 print("\nHypos written to disk.")
 
 with open('./results/wikievent_noret_basicdecoder_targets.txt', 'w') as fp:
     fp.write('\n'.join(write_targs) + '\n')
-    
 print("\nTargets written to disk.")
 
 
