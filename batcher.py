@@ -229,6 +229,7 @@ class KerasBatcher(tf.keras.utils.Sequence):
     self.vocab = vocab
     self.hps = hps
     self.batch_size = batch_size if batch_size is not None else hps.batch_size
+    self.hps.batch_size = self.batch_size
 
     self.source, self.target = data.paired_returner(self.src_data_path, self.tgt_data_path)
 
@@ -488,25 +489,29 @@ if __name__ == '__main__':
   )
 
   sequence = KerasBatcher(
-    '../WikiEvent/train.src',
-    '../WikiEvent/train.tgt',
+    '../WikiEvent/test.src',
+    '../WikiEvent/test.tgt',
     vocab,
     hps
   )
 
-  dataset = tf.keras.utils.OrderedEnqueuer(sequence, shuffle=True)
-  dataset.start(workers=3, max_queue_size=10)
-  count = 0
-  for batch in dataset.get():
-    print(batch.enc_batch)
-    count += 1
-    if count >= 50:
-      print("Count is %d; exiting." % count)
-      break
+  for batch in tqdm(sequence):
+    # print(batch.enc_batch)
+    time.sleep(0.01)
 
-  from tqdm import tqdm
-  progbar = tqdm(enumerate(dataset.get()), total=100)
-  for ix, batch in progbar:
-    time.sleep(0.1)
+  # dataset = tf.keras.utils.OrderedEnqueuer(sequence, shuffle=True)
+  # dataset.start(workers=3, max_queue_size=10)
+  # count = 0
+  # for batch in dataset.get():
+  #   print(batch.enc_batch)
+  #   count += 1
+  #   if count >= 50:
+  #     print("Count is %d; exiting." % count)
+  #     break
 
-  dataset.stop()
+  # from tqdm import tqdm
+  # progbar = tqdm(enumerate(dataset.get()), total=100)
+  # for ix, batch in progbar:
+  #   time.sleep(0.1)
+
+  # dataset.stop()
