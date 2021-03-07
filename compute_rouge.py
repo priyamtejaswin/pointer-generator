@@ -35,7 +35,7 @@ def main(target_file, pred_file,
     arr_targets = []
     with open(target_file) as fp:
         for line in fp.readlines():
-            arr_targets.append(line.strip())
+            arr_targets.append(line.strip().lower())
 
     # Load and clean preds.
     arr_preds = []
