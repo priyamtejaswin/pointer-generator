@@ -189,12 +189,17 @@ class Decoder(tf.keras.Model):
     else:
         # Shape of output.rnn_output : [batch X time X attention_units]
         # Shape of alignments: [batch X time X src_seq_len]
+        
         # 1. Compute p_gens for each decoding timestep.
+        p_gens = self.dense_gen(
+            tf.concat(states + [x, outputs.rnn_output], axis=-1)
+        )
+
         return
 
 
 # Test decoder stack
-decoder = Decoder(vocab.size(), embedding_dim, units, hps.batch_size, 'luong')
+decoder = Decoder(vocab.size(), embedding_dim, units, hps.batch_size, 'luong', pointer_gen=True)
 sample_x = tf.random.uniform((hps.batch_size, max_length_output))
 decoder.attention_mechanism.setup_memory(sample_output)
 initial_state = decoder.build_initial_state(BATCH_SIZE, [sample_h, sample_c], tf.float32)
