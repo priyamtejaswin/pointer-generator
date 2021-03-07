@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+#
+#
+# This file is a modified version of the TFA Seq2Seq `decoder.py` module:
+# https://github.com/tensorflow/addons/blob/master/tensorflow_addons/seq2seq/decoder.py
+# The code modifies the `dynamic_decode` function to return cell state and
+# alignment probabilities for the target sequence.
 """Base classes and functions for dynamic decoding."""
 
 import abc
