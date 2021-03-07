@@ -15,6 +15,7 @@ from batcher import KerasBatcher
 from data import Vocab
 
 
+# Some strange TF hack to avoid CUDNN errors ...
 physical_devices = tf.config.list_physical_devices('GPU')
 for phydev in physical_devices:
     tf.config.experimental.set_memory_growth(phydev, enable=True)
@@ -123,11 +124,12 @@ print ('Encoder c vector shape: (batch size, units) {}'.format(sample_c.shape))
 
 
 class Decoder(tf.keras.Model):
-  def __init__(self, vocab_size, embedding_dim, dec_units, batch_sz, attention_type='luong'):
+  def __init__(self, vocab_size, embedding_dim, dec_units, batch_sz, attention_type='luong', pointer_gen=False):
     super(Decoder, self).__init__()
     self.batch_sz = batch_sz
     self.dec_units = dec_units
     self.attention_type = attention_type
+    self.pointer_gen = pointer_gen
     
     # Embedding Layer
     self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
@@ -137,8 +139,6 @@ class Decoder(tf.keras.Model):
 
     # Define the fundamental cell for decoder recurrent structure
     self.decoder_rnn_cell = tf.keras.layers.LSTMCell(self.dec_units)
-   
-
 
     # Sampler
     self.sampler = tfa.seq2seq.sampler.TrainingSampler()
@@ -151,7 +151,10 @@ class Decoder(tf.keras.Model):
     self.rnn_cell = self.build_rnn_cell(batch_sz)
 
     # Define the decoder with respect to fundamental rnn cell
-    self.decoder = tfa.seq2seq.BasicDecoder(self.rnn_cell, sampler=self.sampler, output_layer=self.fc)
+    self.decoder = tfa.seq2seq.BasicDecoder(self.rnn_cell, sampler=self.sampler, output_layer=self.fc if pointer_gen is False else None)
+
+    # Dense layer for p_gen
+    self.dense_gen = tf.keras.layers.Dense(1, activation=tf.keras.activations.sigmoid)
 
     
   def build_rnn_cell(self, batch_sz):
@@ -159,17 +162,18 @@ class Decoder(tf.keras.Model):
                                   self.attention_mechanism, attention_layer_size=self.dec_units)
     return rnn_cell
 
+
   def build_attention_mechanism(self, dec_units, memory, memory_sequence_length, attention_type='luong'):
     # ------------- #
     # typ: Which sort of attention (Bahdanau, Luong)
     # dec_units: final dimension of attention outputs 
     # memory: encoder hidden states of shape (batch_size, max_length_input, enc_units)
     # memory_sequence_length: 1d array of shape (batch_size) with every element set to max_length_input (for masking purpose)
-
     if(attention_type=='bahdanau'):
       return tfa.seq2seq.BahdanauAttention(units=dec_units, memory=memory, memory_sequence_length=memory_sequence_length)
     else:
       return tfa.seq2seq.LuongAttention(units=dec_units, memory=memory, memory_sequence_length=memory_sequence_length)
+
 
   def build_initial_state(self, batch_sz, encoder_state, Dtype):
     decoder_initial_state = self.rnn_cell.get_initial_state(batch_size=batch_sz, dtype=Dtype)
@@ -179,8 +183,14 @@ class Decoder(tf.keras.Model):
 
   def call(self, inputs, initial_state):
     x = self.embedding(inputs)
-    outputs, _, _ = self.decoder(x, initial_state=initial_state, sequence_length=self.batch_sz*[max_length_output])
-    return outputs
+    outputs, alignments, states, _a, _b = self.decoder(x, initial_state=initial_state, sequence_length=self.batch_sz*[max_length_output])
+    if self.pointer_gen is False:
+        return outputs  # Shape of output.rnn_output : [batch X time X vocab]
+    else:
+        # Shape of output.rnn_output : [batch X time X attention_units]
+        # Shape of alignments: [batch X time X src_seq_len]
+        # 1. Compute p_gens for each decoding timestep.
+        return
 
 
 # Test decoder stack
@@ -255,7 +265,7 @@ EPOCHS = 10
 TOTAL = steps_per_epoch * EPOCHS
 enc_hidden = encoder.initialize_hidden_state()
 
-progbar = [] #tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
+progbar = tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
 for ix, batch in progbar:
     batch_loss = train_step(batch, enc_hidden, update=True)
     progbar.set_description("avg loss: %.3f" % batch_loss.numpy())
