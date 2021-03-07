@@ -20,242 +20,6 @@ for phydev in physical_devices:
     tf.config.experimental.set_memory_growth(phydev, enable=True)
 
 
-class NMTDataset:
-    def __init__(self, problem_type='en-spa'):
-        self.problem_type = 'en-spa'
-        self.inp_lang_tokenizer = None
-        self.targ_lang_tokenizer = None
-    
-
-    def unicode_to_ascii(self, s):
-        return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
-    
-    
-    def load_text(self, path, num_examples=None):
-        return io.open(path, encoding='UTF-8').read().strip().split('\n')[:num_examples]
-
-    def create_wikievent_source(self, lines):
-        data = []
-        for ix, l in enumerate(lines):
-            clean = l.strip().lower()
-            # entities, sentences = clean.split('WIKISEP')
-            # entities = entities.strip().lower()
-            # sentences = sentences.strip().lower()
-            # entities = '<start> ' + entities + ' <end>'
-
-            text = '<start> ' + ' '.join(clean.split()[:250]) + ' <end>'
-            data.append(text)
-
-        return data
-
-    def create_wikievent_target(self, lines, truncate=True):
-        data = []
-        for ix, l in enumerate(lines):
-            clean = l.strip().lower()
-            if truncate:
-                clean = ' '.join(clean.split()[:40])
-
-            data.append('<start> ' + clean + ' <end>')
-
-        return data
-            
-    
-    def create_wikibio_target(self, lines, ids, truncate=True):
-        assert len(lines) == sum(ids)
-        data = []
-        ix = 0
-        for n in tqdm(ids):
-            words = '<start> ' + lines[ix] + ' <end>'
-            if truncate:
-                words = ' '.join(words.split()[:35])  # 35
-
-            data.append(words)
-            ix += n
-
-        return data
-    
-    def create_wikibio_source(self, lines, answers, indices):
-        """
-        Creates the dataset.
-        lines: Original bio data.
-        answers: Paragraphs retrieved using bio data as query.
-        indices: Line numbers corresponding to the answers file.
-        """
-        assert len(indices) == len(lines)
-        assert indices[-1] == len(answers)
-        
-        prev = 0
-        sep = '<sep>'
-        data = []
-        for ix, l in enumerate(lines):#, total=len(lines)):
-            clean = []
-            s, e = '', ''
-
-            for word in l.split():
-                if len(re.findall(':', word)) != 1:
-                    continue
-
-                key, val = word.split(':')
-                if val != '<none>':
-                    match = re.search(r'_[0-9]+$', key)
-                    if match is None:
-                        clean.append(key)
-                        clean.append(val)
-                        clean.append(sep)
-
-                        s = ''
-                        e = ''
-                    else:
-                        holder = key[:match.start()]
-                        if s:
-                            if s == holder:
-                                e += val + ' '
-                            else:
-                                clean.append(s)
-                                clean.append(e.strip())
-                                clean.append(sep)
-
-                                s = holder
-                                e = val + ' '
-
-                        else:
-                            s = holder
-                            e = val + ' '
-
-            if s:
-                clean.append(s)
-                clean.append(e.strip())
-                clean.append(sep)
-
-            tokens = '<start> ' + ' '.join(clean).strip(sep).strip()
-            tokens = ' '.join(tokens.split()[:80])
-            
-            extra = answers[prev : indices[ix]]
-            for ret in extra:
-                tokens += ' <ret> ' + ret
-                
-            tokens = ' '.join(tokens.split()[:250]) + ' <end>'
-            data.append(tokens)
-            prev = indices[ix]
-
-        return data
-    
-
-    ## Step 1 and Step 2 
-    def preprocess_sentence(self, w):
-        w = self.unicode_to_ascii(w.lower().strip())
-
-        # creating a space between a word and the punctuation following it
-        # eg: "he is a boy." => "he is a boy ."
-        # Reference:- https://stackoverflow.com/questions/3645931/python-padding-punctuation-with-white-spaces-keeping-punctuation
-        w = re.sub(r"([?.!,¿])", r" \1 ", w)
-        w = re.sub(r'[" "]+', " ", w)
-
-        # replacing everything with space except (a-z, A-Z, ".", "?", "!", ",")
-        w = re.sub(r"[^a-zA-Z?.!,¿]+", " ", w)
-
-        w = w.strip()
-
-        # adding a start and an end token to the sentence
-        # so that the model know when to start and stop predicting.
-        w = '<start> ' + w + ' <end>'
-        return w
-    
-    def create_dataset(self, path, num_examples):
-        # path : path to spa-eng.txt file
-        # num_examples : Limit the total number of training example for faster training (set num_examples = len(lines) to use full data)
-        
-        lines = io.open(path, encoding='UTF-8').read().strip().split('\n')
-        sent_pairs = [[self.preprocess_sentence(w) for w in l.split('\t')]  for l in lines[:num_examples]]
-        return zip(*sent_pairs)
-        
-
-    def create_wikibio_data(self, maindir, num_examples):
-        """
-        path: Dir location. Must contain train file.
-        """
-        path_train_src = os.path.join(maindir, 'train', 'train.box')
-        path_train_tgt = os.path.join(maindir, 'train', 'train.sent')
-        path_train_nbs = os.path.join(maindir, 'train', 'train.nb')
-        
-        nbs = [int(x) for x in self.load_text(path_train_nbs)[:num_examples]]
-        all_targets = self.load_text(path_train_tgt)[:sum(nbs)]
-        target = self.create_wikibio_target(all_targets, nbs)
-        
-        path_ans = os.path.join(maindir, 'train', 'train.ans')
-        path_howmany = os.path.join(maindir, 'train', 'train.ans.ix')
-        howmany = [int(x) for x in self.load_text(path_howmany)[:num_examples]]
-        source = self.create_wikibio_source(self.load_text(path_train_src, num_examples=num_examples), 
-                                            self.load_text(path_ans, num_examples=howmany[-1]),
-                                            howmany)
-        
-        assert len(source) == len(target)
-        return source, target
-
-    
-    def create_wikievent_data(self, maindir, subset, num_examples=None):
-        """
-        Path to train/dev/test files for WikiEvent.
-        subset: {train, dev, test}
-        """
-        path_src = os.path.join(maindir, subset + '.src')
-        path_tgt = os.path.join(maindir, subset + '.tgt')
-
-        source = self.create_wikievent_source(self.load_text(path_src, num_examples=num_examples))
-        target = self.create_wikievent_target(self.load_text(path_tgt, num_examples=num_examples))
-
-        assert len(source) == len(target)
-        return source, target
-
-
-    # Step 3 and Step 4
-    def tokenize(self, lang):
-        # lang = list of sentences in a language
-        
-        # print(len(lang), "example sentence: {}".format(lang[0]))
-        lang_tokenizer = tf.keras.preprocessing.text.Tokenizer(filters='', oov_token='<OOV>', num_words=50000)
-        lang_tokenizer.fit_on_texts(lang)
-
-        ## tf.keras.preprocessing.text.Tokenizer.texts_to_sequences converts string (w1, w2, w3, ......, wn) 
-        ## to a list of correspoding integer ids of words (id_w1, id_w2, id_w3, ...., id_wn)
-        tensor = lang_tokenizer.texts_to_sequences(lang) 
-
-        ## tf.keras.preprocessing.sequence.pad_sequences takes argument a list of integer id sequences 
-        ## and pads the sequences to match the longest sequences in the given input
-        tensor = tf.keras.preprocessing.sequence.pad_sequences(tensor, padding='post')
-
-        return tensor, lang_tokenizer
-
-    def load_dataset(self, path, subset, num_examples=None):
-        """
-        Creating cleaned input, output pairs.
-        Subset: {train, dev, test}
-        """
-        # targ_lang, inp_lang = self.create_dataset(path, num_examples)
-        # inp_lang, targ_lang = self.create_wikibio_data(path, num_examples)
-        
-        inp_lang, targ_lang = self.create_wikievent_data(maindir=path, subset=subset, num_examples=num_examples)
-
-        input_tensor, inp_lang_tokenizer = self.tokenize(inp_lang)
-        target_tensor, targ_lang_tokenizer = self.tokenize(targ_lang)
-
-        return input_tensor, target_tensor, inp_lang_tokenizer, targ_lang_tokenizer
-
-
-    def call(self, path, subset, num_examples, BUFFER_SIZE, BATCH_SIZE):
-        """
-        Creates source, target tensors with tokenizers.
-        Returns TF Dataset, tokenizers and steps_per_epoch.
-        """
-        input_tensor, target_tensor, self.inp_lang_tokenizer, self.targ_lang_tokenizer = self.load_dataset(path, subset, num_examples)
-
-        train_dataset = tf.data.Dataset.from_tensor_slices((input_tensor, target_tensor))
-        train_dataset = train_dataset.shuffle(len(input_tensor), reshuffle_each_iteration=True)
-        train_dataset = train_dataset.batch(BATCH_SIZE, drop_remainder=True).prefetch(buffer_size=BATCH_SIZE)
-
-        return train_dataset, self.inp_lang_tokenizer, self.targ_lang_tokenizer, len(input_tensor)//BATCH_SIZE
-
-
 class HPS(object):
     """
     Container for all hyperparameters.
@@ -269,15 +33,10 @@ class HPS(object):
 
 BUFFER_SIZE = 32
 BATCH_SIZE = 32
-# Let's limit the #training examples for faster training
-# num_examples = None
-# dataset_creator = NMTDataset('en-spa')
-# train_dataset, inp_lang, targ_lang, steps_per_epoch = dataset_creator.call('../WikiEvent', 'train',
-#                                                                             num_examples, BUFFER_SIZE, BATCH_SIZE)
 
 hps = HPS()
 vocab = Vocab(
-    '../WikiEvent/train.vocab', 80000
+    '../WikiEvent/train.vocab', 85000
 )
 sequence = KerasBatcher(
     '../WikiEvent/train.src',
@@ -425,12 +184,10 @@ class Decoder(tf.keras.Model):
 
 
 # Test decoder stack
-
 decoder = Decoder(vocab.size(), embedding_dim, units, hps.batch_size, 'luong')
 sample_x = tf.random.uniform((hps.batch_size, max_length_output))
 decoder.attention_mechanism.setup_memory(sample_output)
 initial_state = decoder.build_initial_state(BATCH_SIZE, [sample_h, sample_c], tf.float32)
-
 
 sample_decoder_outputs = decoder(sample_x, initial_state)
 
@@ -517,89 +274,9 @@ for ix, batch in progbar:
 train_dataset.stop()
 
 
-# ## Use tf-addons BasicDecoder for decoding
-def evaluate_sentence(sentence):
-  """
-  `sentence` is RAW!
-  It is not `pre-processed`.
-  `create_wikibio_source` is called IN THIS FUNCTION!
-  """
-#   sentence = dataset_creator.preprocess_sentence(sentence)
-#   inputs = [inp_lang.word_index[i] for i in sentence.split(' ')]
-#   inputs = tf.keras.preprocessing.sequence.pad_sequences([inputs],
-#                                                           maxlen=max_length_input,
-#                                                           padding='post')
-
-  if isinstance(sentence, str):
-    sentence = [sentence]
-  
-#   inputs = []
-#   for s in sentence:
-#     inputs.append([inp_lang.word_index[i] for i in dataset_creator.preprocess_sentence(s).split(' ')])
-
-  inputs = inp_lang.texts_to_sequences(dataset_creator.create_wikievent_source(sentence))
-  inputs = tf.keras.preprocessing.sequence.pad_sequences(inputs,
-                                                          maxlen=max_length_input,
-                                                          padding='post')
-  inputs = tf.convert_to_tensor(inputs)
-  inference_batch_size = inputs.shape[0]
-  result = ''
-
-  enc_start_state = [tf.zeros((inference_batch_size, units)), tf.zeros((inference_batch_size,units))] * 2
-  enc_out, enc_h, enc_c = encoder(inputs, enc_start_state)
-
-  dec_h = enc_h
-  dec_c = enc_c
-
-  start_tokens = tf.fill([inference_batch_size], targ_lang.word_index['<start>'])
-  end_token = targ_lang.word_index['<end>']
-
-  greedy_sampler = tfa.seq2seq.GreedyEmbeddingSampler()
-
-  # Instantiate BasicDecoder object
-  decoder_instance = tfa.seq2seq.BasicDecoder(cell=decoder.rnn_cell, sampler=greedy_sampler, output_layer=decoder.fc, maximum_iterations=40)
-  # Setup Memory in decoder stack
-  decoder.attention_mechanism.setup_memory(enc_out)
-
-  # set decoder_initial_state
-  decoder_initial_state = decoder.build_initial_state(inference_batch_size, [enc_h, enc_c], tf.float32)
-
-
-  ### Since the BasicDecoder wraps around Decoder's rnn cell only, you have to ensure that the inputs to BasicDecoder 
-  ### decoding step is output of embedding layer. tfa.seq2seq.GreedyEmbeddingSampler() takes care of this. 
-  ### You only need to get the weights of embedding layer, which can be done by decoder.embedding.variables[0] and pass this callabble to BasicDecoder's call() function
-
-  decoder_embedding_matrix = decoder.embedding.variables[0]
-  
-  outputs, _, _ = decoder_instance(decoder_embedding_matrix, start_tokens = start_tokens, end_token= end_token, initial_state=decoder_initial_state)
-  return outputs.sample_id.numpy()
-
-def translate(sentence):
-  result = evaluate_sentence(sentence)
-  print(result)
-  result = targ_lang.sequences_to_texts(result)
-  print('Input: %s' % (sentence))
-  print('Predicted translation: {}'.format(result))
-
-
 # ## Restore the latest checkpoint and test
-
-# restoring the latest checkpoint in checkpoint_dir
 checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
 
-
-# translate(u'hace mucho frio aqui.')
-# translate('''type_1:pope	name_1:michael	name_2:iii	name_3:of	name_4:alexandria	title_1:56th	title_2:pope	title_3:of	title_4:alexandria	title_5:&	title_6:patriarch	title_7:of	title_8:the	title_9:see	title_10:of	title_11:st.	title_12:mark	image:<none>	caption:<none>	enthroned_1:25	enthroned_2:april	enthroned_3:880ended_1:16	ended_2:march	ended_3:907	predecessor_1:shenouda	predecessor_2:i	successor_1:gabriel	successor_2:i	ordination:<none>	consecration:<none>	birth_date:<none> 	birth_name:<none>	birth_place_1:egypt	death_date_1:16	death_date_2:march	death_date_3:907	buried_1:monastery	buried_2:of	buried_3:saint	buried_4:macarius  	buried_5:the	buried_6:great	nationality_1:egyptian	religion_1:coptic	religion_2:orthodox	religion_3:christian	residence_1:saint	residence_2:mark	residence_3:'s	residence_4:church	feast_day_1:16	feast_day_2:march	feast_day_3:-lrb-	feast_day_4:20	feast_day_5:baramhat	feast_day_6:in	feast_day_7:the	feast_day_8:coptic	feast_day_9:calendar	feast_day_10:-rrb-	alma_mater:<none>	signature:<none>	article_title_1:pope	article_title_2:michael	article_title_3:iii	article_title_4:of	article_title_5:alexandria''')
-
-
-# translate('''name_1:paul\tname_2:f.\tname_3:whelan\timage:<none>\talt:<none>\tcaption:<none>\tbirth_name:<none>\tbirth_date:<none>\tbirth_place:<none>\tdeath_date:<none>\tdeath_place:<none>\tnationality:<none>\tother_names:<none>\tknown_for:<none>\toccupation_1:professor\toccupation_2:of\toccupation_3:computer\toccupation_4:vision\tarticle_title_1:paul\tarticle_title_2:f.\tarticle_title_3:whelan''')
-
-
-# dataset_creator.create_wikibio_source(['''name_1:paul\tname_2:f.\tname_3:whelan\timage:<none>\talt:<none>\tcaption:<none>\tbirth_name:<none>\tbirth_date:<none>\tbirth_place:<none>\tdeath_date:<none>\tdeath_place:<none>\tnationality:<none>\tother_names:<none>\tknown_for:<none>\toccupation_1:professor\toccupation_2:of\toccupation_3:computer\toccupation_4:vision\tarticle_title_1:paul\tarticle_title_2:f.\tarticle_title_3:whelan'''])
-
-
-# ## Use tf-addons BeamSearchDecoder 
-# 
 
 def beam_evaluate_sentence(inputs, start_id, end_id, beam_width=3):
   inference_batch_size = inputs.shape[0]
@@ -667,13 +344,6 @@ def beam_translate(inputs, vocab):
 
 
 # ## Batch Decoding ...
-
-# testX = dataset_creator.load_text('../wikipedia-biography-dataset/wikipedia-biography-dataset/test/test.box')
-# testIds = [int(x) for x in dataset_creator.load_text('../wikipedia-biography-dataset/wikipedia-biography-dataset/test/test.nb')]
-# testTargs = dataset_creator.load_text('../wikipedia-biography-dataset/wikipedia-biography-dataset/test/test.sent', sum(testIds))
-# testY = dataset_creator.create_wikibio_target(testTargs, testIds)
-
-
 test_dataset = KerasBatcher(
     '../WikiEvent/test.src',
     '../WikiEvent/test.tgt',
