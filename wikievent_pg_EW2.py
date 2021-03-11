@@ -130,6 +130,7 @@ class Decoder(tf.keras.Model):
     self.dec_units = dec_units
     self.attention_type = attention_type
     self.pointer_gen = pointer_gen
+    self.vocab_size = vocab_size
     
     # Embedding Layer
     self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
@@ -181,7 +182,7 @@ class Decoder(tf.keras.Model):
     return decoder_initial_state
 
 
-  def call(self, inputs, initial_state):
+  def call(self, inputs, initial_state, max_art_oovs=None, enc_batch_extend_vocab=None):
     x = self.embedding(inputs)
     outputs, alignments, states, _a, _b = self.decoder(x, initial_state=initial_state, sequence_length=self.batch_sz*[max_length_output])
     if self.pointer_gen is False:
@@ -189,12 +190,41 @@ class Decoder(tf.keras.Model):
     else:
         # Shape of output.rnn_output : [batch X time X attention_units]
         # Shape of alignments: [batch X time X src_seq_len]
-        
         # 1. Compute p_gens for each decoding timestep.
         p_gens = self.dense_gen(
             tf.concat(states + [x, outputs.rnn_output], axis=-1)
         )
+        # 2. Compute vocab_dists for each decoding timestep,
+        # and multiply with p_gens.
+        vocab_dists = p_gens * self.fc(outputs.rnn_output)
+        # 3. Multiply alignment with (1-p_gen).
+        atten_dists = (1 - p_gens) * alignments
 
+        # Extend vocab for in-article OOV words,
+        # to hold the probabilities for in-article OOV words.
+        extended_vsize = self.vocab_size + max_art_oovs
+        extra_zeros = tf.zeros((x.shape[0], vocab_dists.shape[1], max_art_oovs))
+        vocab_dists_extended = tf.concat([vocab_dists, extra_zeros], axis=-1)
+
+        # Project the values in the attention distributions,
+        # onto the appropriate entries in the final distributions.
+        # This means that if a_i = 0.1 and the ith encoder word is w, and w has index 500 in the vocabulary,
+        # then we add 0.1 onto the 500th entry of the final distribution.
+        # This is done for each decoder timestep.
+        # Use tf.scatter_nd to do the projection.
+        bsize = x.shape[0]
+        src_seq_len = alignments.shape[-1]
+
+        indices = tf.expand_dims(enc_batch_extend_vocab, -1)
+        positions = tf.reshape(tf.range(bsize), [1, bsize, 1])
+        positions = tf.repeat(positions, [src_seq_len]*bsize, axis=1)
+        positions = tf.reshape(positions, indices.shape)
+        positions = tf.concat([positions, indices], axis=-1)
+
+        dec_seq_len = atten_dists.shape[1]
+        attn_dists_projected = [
+            tf.scatter_nd(positions, atten_dists[:, 0, :], [bsize, extended_vsize]) for i in range(dec_seq_len)
+        ]
         return
 
 
@@ -204,7 +234,7 @@ sample_x = tf.random.uniform((hps.batch_size, max_length_output))
 decoder.attention_mechanism.setup_memory(sample_output)
 initial_state = decoder.build_initial_state(BATCH_SIZE, [sample_h, sample_c], tf.float32)
 
-sample_decoder_outputs = decoder(sample_x, initial_state)
+sample_decoder_outputs = decoder(sample_x, initial_state, max_art_oovs=15, enc_batch_extend_vocab=example_input_batch)
 
 print("Decoder Outputs Shape: ", sample_decoder_outputs.rnn_output.shape)
 
