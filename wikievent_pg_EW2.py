@@ -318,7 +318,7 @@ def train_step(batch, enc_hidden, update=True, pointer_gen=True):
 
         loss = _mask_and_avg(loss_per_step, batch.dec_padding_mask)
 
-  if update:
+  if update and tf.math.is_nan(loss).numpy() is False:
       variables = encoder.trainable_variables + decoder.trainable_variables
       gradients = tape.gradient(loss, variables)
       optimizer.apply_gradients(zip(gradients, variables))
