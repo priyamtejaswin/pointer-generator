@@ -11,6 +11,8 @@ import io
 import time
 import datetime
 from tqdm import tqdm
+from collections import namedtuple
+
 from batcher import KerasBatcher
 from data import Vocab
 
@@ -157,6 +159,10 @@ class Decoder(tf.keras.Model):
     # Dense layer for p_gen
     self.dense_gen = tf.keras.layers.Dense(1, activation=tf.keras.activations.sigmoid)
 
+    # Something to wrap the Copy-Mechanism output.
+    # To be used by other TFA objects and modules.
+    self.CustomDecoderOutput = namedtuple("CustomDecoderOutput", ("rnn_output", "sample_id"))
+
     
   def build_rnn_cell(self, batch_sz):
     rnn_cell = tfa.seq2seq.AttentionWrapper(self.decoder_rnn_cell, 
@@ -180,6 +186,15 @@ class Decoder(tf.keras.Model):
     decoder_initial_state = self.rnn_cell.get_initial_state(batch_size=batch_sz, dtype=Dtype)
     decoder_initial_state = decoder_initial_state.clone(cell_state=encoder_state)
     return decoder_initial_state
+
+  def _transpose_batch_time(self, tensor):
+    """Transposes the batch and time dimension of tensor if its rank is at
+    least 2."""
+    shape = tensor.shape
+    if shape.rank is not None and shape.rank < 2:
+        return tensor
+    perm = tf.concat(([1, 0], tf.range(2, tf.rank(tensor))), axis=0)
+    return tf.transpose(tensor, perm)
 
 
   def call(self, inputs, initial_state, max_art_oovs=None, enc_batch_extend_vocab=None):
@@ -222,10 +237,12 @@ class Decoder(tf.keras.Model):
         positions = tf.concat([positions, indices], axis=-1)
 
         dec_seq_len = atten_dists.shape[1]
-        attn_dists_projected = [
+        attn_dists_projected = self._transpose_batch_time(tf.stack([
             tf.scatter_nd(positions, atten_dists[:, 0, :], [bsize, extended_vsize]) for i in range(dec_seq_len)
-        ]
-        return
+        ]))
+
+        final_dists = vocab_dists_extended + attn_dists_projected
+        return self.CustomDecoderOutput(final_dists, outputs.sample_id)
 
 
 # Test decoder stack
@@ -263,7 +280,7 @@ checkpoint = tf.train.Checkpoint(optimizer=optimizer,
 
 # ## One train_step operations
 # @tf.function
-def train_step(batch, enc_hidden, update=True):
+def train_step(batch, enc_hidden, update=True, pointer_gen=True):
   loss = 0
 
   with tf.GradientTape() as tape:
@@ -277,9 +294,29 @@ def train_step(batch, enc_hidden, update=True):
 
     # Create AttentionWrapperState as initial_state for decoder
     decoder_initial_state = decoder.build_initial_state(BATCH_SIZE, [enc_h, enc_c], tf.float32)
-    pred = decoder(dec_input, decoder_initial_state)
+    # Deocder call(inputs, initial_state, max_art_oovs=None, enc_batch_extend_vocab=None):
+    pred = decoder(dec_input, decoder_initial_state, 
+                   max_art_oovs=batch.max_art_oovs, enc_batch_extend_vocab=batch.enc_batch_extend_vocab)
     logits = pred.rnn_output
-    loss = loss_function(real, logits)
+
+    if pointer_gen is False:
+        # Standard Seq2Seq,
+        # output distribution is over the *know* vocab size.
+        loss = loss_function(real, logits)
+    else:
+        # Calculate loss for each step.
+        loss_per_step = [] # will be list length max_dec_steps containing shape (batch_size)
+        batch_nums = tf.range(0, BATCH_SIZE) # shape (batch_size)
+
+        for dec_step in range(logits.shape[1]):
+            # Iterate over all decoded steps ...
+            targets = real[:, dec_step] # The indices of the target words. shape (batch_size)
+            indices = tf.stack( (batch_nums, targets), axis=1) # shape (batch_size, 2)
+            gold_probs = tf.gather_nd(logits[:, dec_step], indices) # shape (batch_size). prob of correct words on this step
+            losses = -tf.math.log(gold_probs)
+            loss_per_step.append(losses)
+
+        loss = _mask_and_avg(loss_per_step, batch.dec_padding_mask)
 
   if update:
       variables = encoder.trainable_variables + decoder.trainable_variables
@@ -287,6 +324,21 @@ def train_step(batch, enc_hidden, update=True):
       optimizer.apply_gradients(zip(gradients, variables))
 
   return loss
+
+
+def _mask_and_avg(values, padding_mask):
+    """
+    Applies mask to values then returns overall average (a scalar)
+    Args:
+        values: a list length max_dec_steps containing arrays shape (batch_size).
+        padding_mask: tensor shape (batch_size, max_dec_steps) containing 1s and 0s.
+    Returns:
+        a scalar
+    """
+    dec_lens = tf.reduce_sum(padding_mask, axis=1) # shape batch_size. float32
+    values_per_step = [v * padding_mask[:,dec_step] for dec_step,v in enumerate(values)]
+    values_per_ex = sum(values_per_step)/dec_lens # shape (batch_size); normalized value for each batch member
+    return tf.reduce_mean(values_per_ex) # overall average
 
 
 # ## Train the model
