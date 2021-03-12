@@ -354,7 +354,7 @@ EPOCHS = 10
 TOTAL = steps_per_epoch * EPOCHS
 enc_hidden = encoder.initialize_hidden_state()
 
-progbar = tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
+progbar = [] # tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
 for ix, batch in progbar:
     batch_loss = train_step(batch, enc_hidden, update=True, pointer_gen=True)
     progbar.set_description("avg loss: %.3f" % batch_loss.numpy())
@@ -402,7 +402,7 @@ def beam_evaluate_sentence(inputs, start_id, end_id, beam_width=3):
   decoder_initial_state = decoder_initial_state.clone(cell_state=hidden_state)
 
   # Instantiate BeamSearchDecoder
-  decoder_instance = tfa.seq2seq.BeamSearchDecoder(decoder.rnn_cell,beam_width=beam_width, output_layer=decoder.fc, maximum_iterations=40)
+  decoder_instance = tfa.seq2seq.BeamSearchDecoder(decoder.rnn_cell, beam_width=beam_width, output_layer=decoder.fc, maximum_iterations=40)
   decoder_embedding_matrix = decoder.embedding.variables[0]
 
   # The BeamSearchDecoder object's call() function takes care of everything.
