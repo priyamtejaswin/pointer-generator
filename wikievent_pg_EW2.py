@@ -298,6 +298,7 @@ def train_step(batch, enc_hidden, update=True, pointer_gen=True):
     pred = decoder(dec_input, decoder_initial_state, 
                    max_art_oovs=batch.max_art_oovs, enc_batch_extend_vocab=batch.enc_batch_extend_vocab)
     logits = pred.rnn_output
+    # Checked the `logits` using `tf.math.is_nan` ==> no NaNs in this!
 
     if pointer_gen is False:
         # Standard Seq2Seq,
@@ -313,12 +314,13 @@ def train_step(batch, enc_hidden, update=True, pointer_gen=True):
             targets = real[:, dec_step] # The indices of the target words. shape (batch_size)
             indices = tf.stack( (batch_nums, targets), axis=1) # shape (batch_size, 2)
             gold_probs = tf.gather_nd(logits[:, dec_step], indices) # shape (batch_size). prob of correct words on this step
-            losses = -tf.math.log(gold_probs)
+
+            losses = -tf.math.log(tf.clip_by_value(gold_probs, 1e-7, 1.0 - 1e-7))
             loss_per_step.append(losses)
 
         loss = _mask_and_avg(loss_per_step, batch.dec_padding_mask)
 
-  if update and tf.math.is_nan(loss).numpy() is False:
+  if update:
       variables = encoder.trainable_variables + decoder.trainable_variables
       gradients = tape.gradient(loss, variables)
       optimizer.apply_gradients(zip(gradients, variables))
@@ -354,7 +356,7 @@ enc_hidden = encoder.initialize_hidden_state()
 
 progbar = tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
 for ix, batch in progbar:
-    batch_loss = train_step(batch, enc_hidden, update=True)
+    batch_loss = train_step(batch, enc_hidden, update=True, pointer_gen=True)
     progbar.set_description("avg loss: %.3f" % batch_loss.numpy())
     
     if ix % 10 == 0:
