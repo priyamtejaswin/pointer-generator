@@ -22,20 +22,17 @@ import tensorflow as tf
 import beam_search
 import data
 import json
-import pyrouge
-import util
+# import pyrouge
+# import util
 import logging
 import numpy as np
-
-FLAGS = tf.app.flags.FLAGS
-
-SECS_UNTIL_NEW_CKPT = 60  # max number of seconds before loading new checkpoint
+from tqdm import tqdm
 
 
 class BeamSearchDecoder(object):
   """Beam search decoder."""
 
-  def __init__(self, model, batcher, vocab):
+  def __init__(self, model, batcher, vocab, FLAGS):
     """Initialize decoder.
 
     Args:
@@ -44,63 +41,62 @@ class BeamSearchDecoder(object):
       vocab: Vocabulary object
     """
     self._model = model
-    self._model.build_graph()
     self._batcher = batcher
     self._vocab = vocab
-    self._saver = tf.train.Saver() # we use this to load checkpoints for decoding
-    self._sess = tf.Session(config=util.get_config())
+    self._flags = FLAGS
+    # self._saver = tf.train.Saver() # we use this to load checkpoints for decoding
+    # self._sess = tf.Session(config=util.get_config())
 
     # Load an initial checkpoint to use for decoding
-    ckpt_path = util.load_ckpt(self._saver, self._sess)
+    # ckpt_path = util.load_ckpt(self._saver, self._sess)
 
-    if FLAGS.single_pass:
-      # Make a descriptive decode directory name
-      ckpt_name = "ckpt-" + ckpt_path.split('-')[-1] # this is something of the form "ckpt-123456"
-      self._decode_dir = os.path.join(FLAGS.log_root, get_decode_dir_name(ckpt_name))
-      if os.path.exists(self._decode_dir):
-        raise Exception("single_pass decode directory %s should not already exist" % self._decode_dir)
+    # if FLAGS.single_pass:
+    #   # Make a descriptive decode directory name
+    #   ckpt_name = "ckpt-" + ckpt_path.split('-')[-1] # this is something of the form "ckpt-123456"
+    #   self._decode_dir = os.path.join(FLAGS.log_root, get_decode_dir_name(ckpt_name))
+    #   if os.path.exists(self._decode_dir):
+    #     raise Exception("single_pass decode directory %s should not already exist" % self._decode_dir)
 
-    else: # Generic decode dir name
-      self._decode_dir = os.path.join(FLAGS.log_root, "decode")
+    # else: # Generic decode dir name
+    self._decode_dir = os.path.join("./results", "decode")
 
     # Make the decode dir if necessary
     if not os.path.exists(self._decode_dir): os.mkdir(self._decode_dir)
 
-    if FLAGS.single_pass:
-      # Make the dirs to contain output written in the correct format for pyrouge
-      self._rouge_ref_dir = os.path.join(self._decode_dir, "reference")
-      if not os.path.exists(self._rouge_ref_dir): os.mkdir(self._rouge_ref_dir)
-      self._rouge_dec_dir = os.path.join(self._decode_dir, "decoded")
-      if not os.path.exists(self._rouge_dec_dir): os.mkdir(self._rouge_dec_dir)
+    # Make the dirs to contain output written in the correct format for pyrouge
+    self._rouge_ref_dir = os.path.join(self._decode_dir, "reference")
+    if not os.path.exists(self._rouge_ref_dir): os.mkdir(self._rouge_ref_dir)
+    self._rouge_dec_dir = os.path.join(self._decode_dir, "decoded")
+    if not os.path.exists(self._rouge_dec_dir): os.mkdir(self._rouge_dec_dir)
 
 
   def decode(self):
-    """Decode examples until data is exhausted (if FLAGS.single_pass) and return, or decode indefinitely, loading latest checkpoint at regular intervals"""
-    t0 = time.time()
+    """Decode examples until data is exhausted and return. Uses latest checkpoint."""
+    # t0 = time.time()
     counter = 0
-    while True:
-      batch = self._batcher.next_batch()  # 1 example repeated across batch
-      if batch is None: # finished decoding dataset in single_pass mode
-        assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
-        tf.logging.info("Decoder has finished reading dataset for single_pass.")
-        tf.logging.info("Output has been saved in %s and %s. Now starting ROUGE eval...", self._rouge_ref_dir, self._rouge_dec_dir)
-        results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
-        rouge_log(results_dict, self._decode_dir)
-        return
+    for batch in tqdm(self._batcher):
+      # batch = self._batcher.next()  # 1 example repeated across batch
+      # if batch is None: # finished decoding dataset in single_pass mode
+      #   assert FLAGS.single_pass, "Dataset exhausted, but we are not in single_pass mode"
+      #   tf.logging.info("Decoder has finished reading dataset for single_pass.")
+      #   tf.logging.info("Output has been saved in %s and %s. Now starting ROUGE eval...", self._rouge_ref_dir, self._rouge_dec_dir)
+      #   results_dict = rouge_eval(self._rouge_ref_dir, self._rouge_dec_dir)
+      #   rouge_log(results_dict, self._decode_dir)
+      #   return
 
       original_article = batch.original_articles[0]  # string
       original_abstract = batch.original_abstracts[0]  # string
       original_abstract_sents = batch.original_abstracts_sents[0]  # list of strings
 
       article_withunks = data.show_art_oovs(original_article, self._vocab) # string
-      abstract_withunks = data.show_abs_oovs(original_abstract, self._vocab, (batch.art_oovs[0] if FLAGS.pointer_gen else None)) # string
+      abstract_withunks = data.show_abs_oovs(original_abstract, self._vocab, (batch.art_oovs[0] if self._flags.pointer_gen else None)) # string
 
       # Run beam search to get best Hypothesis
-      best_hyp = beam_search.run_beam_search(self._sess, self._model, self._vocab, batch)
+      best_hyp = beam_search.run_beam_search(self._model, self._vocab, batch, self._flags)
 
       # Extract the output ids from the hypothesis and convert back to words
       output_ids = [int(t) for t in best_hyp.tokens[1:]]
-      decoded_words = data.outputids2words(output_ids, self._vocab, (batch.art_oovs[0] if FLAGS.pointer_gen else None))
+      decoded_words = data.outputids2words(output_ids, self._vocab, (batch.art_oovs[0] if self._flags.pointer_gen else None))
 
       # Remove the [STOP] token from decoded_words, if necessary
       try:
@@ -110,19 +106,18 @@ class BeamSearchDecoder(object):
         decoded_words = decoded_words
       decoded_output = ' '.join(decoded_words) # single string
 
-      if FLAGS.single_pass:
-        self.write_for_rouge(original_abstract_sents, decoded_words, counter) # write ref summary and decoded summary to file, to eval with pyrouge later
-        counter += 1 # this is how many examples we've decoded
-      else:
-        print_results(article_withunks, abstract_withunks, decoded_output) # log output to screen
-        self.write_for_attnvis(article_withunks, abstract_withunks, decoded_words, best_hyp.attn_dists, best_hyp.p_gens) # write info to .json file for visualization tool
+      self.write_for_rouge(original_abstract_sents, decoded_words, counter) # write ref summary and decoded summary to file, to eval with pyrouge later
+      counter += 1 # this is how many examples we've decoded
+      # else:
+      #   print_results(article_withunks, abstract_withunks, decoded_output) # log output to screen
+      #   self.write_for_attnvis(article_withunks, abstract_withunks, decoded_words, best_hyp.attn_dists, best_hyp.p_gens) # write info to .json file for visualization tool
 
-        # Check if SECS_UNTIL_NEW_CKPT has elapsed; if so return so we can load a new checkpoint
-        t1 = time.time()
-        if t1-t0 > SECS_UNTIL_NEW_CKPT:
-          tf.logging.info('We\'ve been decoding with same checkpoint for %i seconds. Time to load new checkpoint', t1-t0)
-          _ = util.load_ckpt(self._saver, self._sess)
-          t0 = time.time()
+      #   # Check if SECS_UNTIL_NEW_CKPT has elapsed; if so return so we can load a new checkpoint
+      #   t1 = time.time()
+      #   if t1-t0 > SECS_UNTIL_NEW_CKPT:
+      #     tf.logging.info('We\'ve been decoding with same checkpoint for %i seconds. Time to load new checkpoint', t1-t0)
+      #     _ = util.load_ckpt(self._saver, self._sess)
+      #     t0 = time.time()
 
   def write_for_rouge(self, reference_sents, decoded_words, ex_index):
     """Write output to file in correct format for eval with pyrouge. This is called in single_pass mode.
@@ -191,11 +186,11 @@ class BeamSearchDecoder(object):
 
 def print_results(article, abstract, decoded_output):
   """Prints the article, the reference summmary and the decoded summary to screen"""
-  print ""
+  print()
   tf.logging.info('ARTICLE:  %s', article)
   tf.logging.info('REFERENCE SUMMARY: %s', abstract)
   tf.logging.info('GENERATED SUMMARY: %s', decoded_output)
-  print ""
+  print()
 
 
 def make_html_safe(s):
