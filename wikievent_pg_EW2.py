@@ -15,6 +15,7 @@ from collections import namedtuple
 
 from batcher import KerasBatcher
 from data import Vocab
+from decode import BeamSearchDecoder
 
 
 # Some strange TF hack to avoid CUDNN errors ...
@@ -197,9 +198,43 @@ class Decoder(tf.keras.Model):
     return tf.transpose(tensor, perm)
 
 
+  def single_step(self, inputs, initial_state, max_art_oovs, enc_batch_extend_vocab):
+      """
+      Single-step decoding, only for the PG mechanism.
+      ONLY TO BE USED DURING INFERENCE -- TrainingSampler + BasicDecoder for training.
+      """
+      x = self.embedding(inputs)
+      # x HAS TO BE [batch x embedsize]; squeeze if you must ...
+      x = tf.squeeze(x)
+      output, state = self.rnn_cell(x, initial_state)
+      # output: [batch x outdimsize]
+      # state: AttentionWrappedState
+      p_gens = self.dense_gen(
+          tf.concat(state.cell_state + [x, output], axis=-1)
+      )
+      vocab_dists = p_gens * self.fc(output)
+      atten_dists = (1 - p_gens) * state.alignments
+      extended_vsize = self.vocab_size + max_art_oovs
+      extra_zeros = tf.zeros((x.shape[0], max_art_oovs))
+      vocab_dists_extended = tf.concat([vocab_dists, extra_zeros], axis=-1)
+
+      # Scatter
+      bsize = x.shape[0]
+      batch_nums = tf.range(0, limit=bsize)  # shape (batch_size)
+      batch_nums = tf.expand_dims(batch_nums, 1)  # shape (batch_size, 1)
+      attn_len = enc_batch_extend_vocab.shape[1]  # len of src sequence
+      batch_nums = tf.tile(batch_nums, [1, attn_len]) # shape (batch_size, attn_len)
+      indices = tf.stack( (batch_nums, enc_batch_extend_vocab), axis=2) # shape (batch_size, enc_t, 2)
+      shape = [bsize, extended_vsize]
+      attn_dists_projected = tf.scatter_nd(indices, atten_dists, shape)
+
+      final_dists = vocab_dists_extended + attn_dists_projected
+      return final_dists, state.cell_state, state.alignments, p_gens
+      
+
   def call(self, inputs, initial_state, max_art_oovs=None, enc_batch_extend_vocab=None):
     x = self.embedding(inputs)
-    outputs, alignments, states, _a, _b = self.decoder(x, initial_state=initial_state, sequence_length=self.batch_sz*[max_length_output])
+    outputs, alignments, states, _a, _b = self.decoder(x, initial_state=initial_state, sequence_length=len(x)*[max_length_output])
     if self.pointer_gen is False:
         return outputs  # Shape of output.rnn_output : [batch X time X vocab]
     else:
@@ -238,7 +273,7 @@ class Decoder(tf.keras.Model):
 
         dec_seq_len = atten_dists.shape[1]
         attn_dists_projected = self._transpose_batch_time(tf.stack([
-            tf.scatter_nd(positions, atten_dists[:, 0, :], [bsize, extended_vsize]) for i in range(dec_seq_len)
+            tf.scatter_nd(positions, atten_dists[:, i, :], [bsize, extended_vsize]) for i in range(dec_seq_len)
         ]))
 
         final_dists = vocab_dists_extended + attn_dists_projected
@@ -254,6 +289,9 @@ initial_state = decoder.build_initial_state(BATCH_SIZE, [sample_h, sample_c], tf
 sample_decoder_outputs = decoder(sample_x, initial_state, max_art_oovs=15, enc_batch_extend_vocab=example_input_batch)
 
 print("Decoder Outputs Shape: ", sample_decoder_outputs.rnn_output.shape)
+
+# Test Decoder.single_step
+decoder.single_step(sample_x[:, 0], initial_state, 15, example_input_batch)
 
 # ## Define the optimizer and the loss function
 optimizer = tf.keras.optimizers.Adam()
@@ -448,16 +486,26 @@ test_dataset = KerasBatcher(
     '../WikiEvent/test.tgt',
     vocab,
     hps,
-    batch_size=5
+    batch_size=1
 )
 
 write_preds = []
 write_targs = []
+model = namedtuple("CombinedModel", ("encoder", "decoder"))(encoder, decoder)
+class FlagHolder:
+    def __init__(self, beam_size, max_dec_steps, pointer_gen=True, min_dec_steps=2):
+        self.beam_size = beam_size
+        self.max_dec_steps = max_dec_steps
+        self.pointer_gen = pointer_gen
+        self.min_dec_steps = min_dec_steps
+FLAGS = FlagHolder(3, 40)
+bsdecr = BeamSearchDecoder(model, test_dataset, vocab, FLAGS)
+
 print("Evaluating test set ...")
 for tbc in tqdm(test_dataset):
-    x, y = tbc.enc_batch, tbc.original_abstracts
-    hypo = beam_translate(x, vocab)
-    
+    # x, y = tbc.enc_batch, tbc.original_abstracts
+    # hypo = beam_translate(x, vocab)
+    bsdecr.decode()
     for text in hypo:
         clean = []
         for w in text.split():
