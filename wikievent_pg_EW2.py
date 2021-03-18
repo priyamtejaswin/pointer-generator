@@ -502,43 +502,44 @@ FLAGS = FlagHolder(3, 40)
 bsdecr = BeamSearchDecoder(model, test_dataset, vocab, FLAGS)
 
 print("Evaluating test set ...")
-for tbc in tqdm(test_dataset):
-    # x, y = tbc.enc_batch, tbc.original_abstracts
-    # hypo = beam_translate(x, vocab)
-    bsdecr.decode()
-    for text in hypo:
-        clean = []
-        for w in text.split():
-            if w == vocab.START_DECODING:
-                pass
-            elif w == vocab.STOP_DECODING:
-                break
-            else:
-                clean.append(w)
+bsdecr.decode()
+
+# for tbc in tqdm(test_dataset):
+#     x, y = tbc.enc_batch, tbc.original_abstracts
+#     hypo = beam_translate(x, vocab)
+#     for text in hypo:
+#         clean = []
+#         for w in text.split():
+#             if w == vocab.START_DECODING:
+#                 pass
+#             elif w == vocab.STOP_DECODING:
+#                 break
+#             else:
+#                 clean.append(w)
                 
-        write_preds.append(' '.join(clean))
+#         write_preds.append(' '.join(clean))
         
-    for text in y:
-        clean = []
-        for w in text.lower().split():
-            if w == vocab.START_DECODING:
-                pass
-            elif w == vocab.STOP_DECODING:
-                break
-            else:
-                clean.append(w)
+#     for text in y:
+#         clean = []
+#         for w in text.lower().split():
+#             if w == vocab.START_DECODING:
+#                 pass
+#             elif w == vocab.STOP_DECODING:
+#                 break
+#             else:
+#                 clean.append(w)
                 
-        write_targs.append(' '.join(clean))    
+#         write_targs.append(' '.join(clean))    
 
 
-# Save preds and truth to disk ...
-with open('./results/wikievent_noret_basicdecoder_hypos.txt', 'w') as fp:
-    fp.write('\n'.join(write_preds) + '\n')
-print("\nHypos written to disk.")
+# # Save preds and truth to disk ...
+# with open('./results/wikievent_noret_basicdecoder_hypos.txt', 'w') as fp:
+#     fp.write('\n'.join(write_preds) + '\n')
+# print("\nHypos written to disk.")
 
-with open('./results/wikievent_noret_basicdecoder_targets.txt', 'w') as fp:
-    fp.write('\n'.join(write_targs) + '\n')
-print("\nTargets written to disk.")
+# with open('./results/wikievent_noret_basicdecoder_targets.txt', 'w') as fp:
+#     fp.write('\n'.join(write_targs) + '\n')
+# print("\nTargets written to disk.")
 
 
 
