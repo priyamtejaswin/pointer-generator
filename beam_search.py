@@ -127,7 +127,7 @@ def run_beam_search(model, vocab, batch, FLAGS):
 
   steps = 0
   while steps < FLAGS.max_dec_steps and len(results) < FLAGS.beam_size:
-    print("step: %d" % steps)
+    # print("step: %d" % steps)
     latest_tokens = [h.latest_token for h in hyps] # latest token produced by each hypothesis
     latest_tokens = [t if t in range(vocab.size()) else vocab.word2id(data.UNKNOWN_TOKEN) for t in latest_tokens] # change any in-article temporary OOV ids to [UNK] id, so that we can lookup word embeddings
     states = [h.state for h in hyps] # list of current decoder states of the hypotheses
@@ -147,9 +147,9 @@ def run_beam_search(model, vocab, batch, FLAGS):
       max_art_oovs=batch.max_art_oovs,
       enc_batch_extend_vocab=tf.tile(batch.enc_batch_extend_vocab, [FLAGS.beam_size, 1])
     )
-    topk_log_probs, topk_ids = tf.math.top_k(final_dists, k=FLAGS.beam_size*2)
-    topk_log_probs = topk_log_probs.numpy()
+    topk_probs, topk_ids = tf.math.top_k(final_dists, k=FLAGS.beam_size*2)
     topk_ids = topk_ids.numpy()
+    topk_log_probs = tf.math.log(tf.clip_by_value(topk_probs, 1e-7, 1.0 - 1e-7)).numpy()
 
     # Extend each hypothesis and collect them all in all_hyps
     all_hyps = []
