@@ -61,7 +61,10 @@ class BeamSearchDecoder(object):
     self._decode_dir = os.path.join("./results", "decode")
 
     # Make the decode dir if necessary
-    if not os.path.exists(self._decode_dir): os.mkdir(self._decode_dir)
+    if os.path.exists(self._decode_dir):
+      raise OSError("self._decode_dir %s already exists. Please copy and delete." % self._decode_dir)
+    else:
+      os.mkdir(self._decode_dir)
 
     # Make the dirs to contain output written in the correct format for pyrouge
     self._rouge_ref_dir = os.path.join(self._decode_dir, "reference")
@@ -154,7 +157,7 @@ class BeamSearchDecoder(object):
       for idx,sent in enumerate(decoded_sents):
         f.write(sent) if idx==len(decoded_sents)-1 else f.write(sent+"\n")
 
-    tf.logging.info("Wrote example %i to file" % ex_index)
+    # tf.logging.info("Wrote example %i to file" % ex_index)
 
 
   def write_for_attnvis(self, article, abstract, decoded_words, attn_dists, p_gens):
