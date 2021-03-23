@@ -392,7 +392,7 @@ EPOCHS = 10
 TOTAL = steps_per_epoch * EPOCHS
 enc_hidden = encoder.initialize_hidden_state()
 
-progbar = [] # tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
+progbar = tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
 for ix, batch in progbar:
     batch_loss = train_step(batch, enc_hidden, update=True, pointer_gen=True)
     progbar.set_description("avg loss: %.3f" % batch_loss.numpy())
