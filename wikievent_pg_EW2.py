@@ -32,7 +32,7 @@ class HPS(object):
         self.batch_size = 32
         self.max_enc_steps = 120
         self.max_dec_steps = 40
-        self.pointer_gen = True
+        self.pointer_gen = False
 
 
 BUFFER_SIZE = 32
@@ -158,7 +158,7 @@ class Decoder(tf.keras.Model):
     self.decoder = tfa.seq2seq.BasicDecoder(self.rnn_cell, sampler=self.sampler, output_layer=self.fc if pointer_gen is False else None)
 
     # Dense layer for p_gen
-    self.dense_gen = tf.keras.layers.Dense(1, activation=tf.keras.activations.sigmoid)
+    # self.dense_gen = tf.keras.layers.Dense(1, activation=tf.keras.activations.sigmoid)
 
     # Something to wrap the Copy-Mechanism output.
     # To be used by other TFA objects and modules.
@@ -234,7 +234,8 @@ class Decoder(tf.keras.Model):
 
   def call(self, inputs, initial_state, max_art_oovs=None, enc_batch_extend_vocab=None):
     x = self.embedding(inputs)
-    outputs, alignments, states, _a, _b = self.decoder(x, initial_state=initial_state, sequence_length=len(x)*[max_length_output])
+    # outputs, alignments, states, _a, _b =
+    outputs, _a, _b = self.decoder(x, initial_state=initial_state, sequence_length=len(x)*[max_length_output])
     if self.pointer_gen is False:
         return outputs  # Shape of output.rnn_output : [batch X time X vocab]
     else:
@@ -281,7 +282,7 @@ class Decoder(tf.keras.Model):
 
 
 # Test decoder stack
-decoder = Decoder(vocab.size(), embedding_dim, units, hps.batch_size, 'luong', pointer_gen=True)
+decoder = Decoder(vocab.size(), embedding_dim, units, hps.batch_size, 'luong')
 sample_x = tf.random.uniform((hps.batch_size, max_length_output))
 decoder.attention_mechanism.setup_memory(sample_output)
 initial_state = decoder.build_initial_state(BATCH_SIZE, [sample_h, sample_c], tf.float32)
@@ -291,7 +292,7 @@ sample_decoder_outputs = decoder(sample_x, initial_state, max_art_oovs=15, enc_b
 print("Decoder Outputs Shape: ", sample_decoder_outputs.rnn_output.shape)
 
 # Test Decoder.single_step
-decoder.single_step(sample_x[:, 0], initial_state, 15, example_input_batch)
+# decoder.single_step(sample_x[:, 0], initial_state, 15, example_input_batch)
 
 # ## Define the optimizer and the loss function
 optimizer = tf.keras.optimizers.Adam()
@@ -318,7 +319,7 @@ checkpoint = tf.train.Checkpoint(optimizer=optimizer,
 
 # ## One train_step operations
 # @tf.function
-def train_step(batch, enc_hidden, update=True, pointer_gen=True):
+def train_step(batch, enc_hidden, update=True, pointer_gen=False):
   loss = 0
 
   with tf.GradientTape() as tape:
@@ -333,8 +334,8 @@ def train_step(batch, enc_hidden, update=True, pointer_gen=True):
     # Create AttentionWrapperState as initial_state for decoder
     decoder_initial_state = decoder.build_initial_state(BATCH_SIZE, [enc_h, enc_c], tf.float32)
     # Deocder call(inputs, initial_state, max_art_oovs=None, enc_batch_extend_vocab=None):
-    pred = decoder(dec_input, decoder_initial_state, 
-                   max_art_oovs=batch.max_art_oovs, enc_batch_extend_vocab=batch.enc_batch_extend_vocab)
+    pred = decoder(dec_input, decoder_initial_state) #, 
+                #    max_art_oovs=batch.max_art_oovs, enc_batch_extend_vocab=batch.enc_batch_extend_vocab)
     logits = pred.rnn_output
     # Checked the `logits` using `tf.math.is_nan` ==> no NaNs in this!
 
@@ -392,9 +393,9 @@ EPOCHS = 10
 TOTAL = steps_per_epoch * EPOCHS
 enc_hidden = encoder.initialize_hidden_state()
 
-progbar = tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
+progbar = []  #tqdm(enumerate(train_dataset.get()), total=TOTAL, desc='avg loss: ')
 for ix, batch in progbar:
-    batch_loss = train_step(batch, enc_hidden, update=True, pointer_gen=True)
+    batch_loss = train_step(batch, enc_hidden, update=True, pointer_gen=False)
     progbar.set_description("avg loss: %.3f" % batch_loss.numpy())
     
     if ix % 10 == 0:
@@ -486,61 +487,56 @@ test_dataset = KerasBatcher(
     '../WikiEvent/test.tgt',
     vocab,
     hps,
-    batch_size=1
+    batch_size=5
 )
 
 write_preds = []
 write_targs = []
-model = namedtuple("CombinedModel", ("encoder", "decoder"))(encoder, decoder)
-class FlagHolder:
-    def __init__(self, beam_size, max_dec_steps, pointer_gen=True, min_dec_steps=2):
-        self.beam_size = beam_size
-        self.max_dec_steps = max_dec_steps
-        self.pointer_gen = pointer_gen
-        self.min_dec_steps = min_dec_steps
-FLAGS = FlagHolder(3, 40)
-bsdecr = BeamSearchDecoder(model, test_dataset, vocab, FLAGS)
+# model = namedtuple("CombinedModel", ("encoder", "decoder"))(encoder, decoder)
+# class FlagHolder:
+#     def __init__(self, beam_size, max_dec_steps, pointer_gen=False, min_dec_steps=2):
+#         self.beam_size = beam_size
+#         self.max_dec_steps = max_dec_steps
+#         self.pointer_gen = pointer_gen
+#         self.min_dec_steps = min_dec_steps
+# FLAGS = FlagHolder(3, 40)
+# bsdecr = BeamSearchDecoder(model, test_dataset, vocab, FLAGS)
+# bsdecr.decode()
 
 print("Evaluating test set ...")
-bsdecr.decode()
-
-# for tbc in tqdm(test_dataset):
-#     x, y = tbc.enc_batch, tbc.original_abstracts
-#     hypo = beam_translate(x, vocab)
-#     for text in hypo:
-#         clean = []
-#         for w in text.split():
-#             if w == vocab.START_DECODING:
-#                 pass
-#             elif w == vocab.STOP_DECODING:
-#                 break
-#             else:
-#                 clean.append(w)
+for tbc in tqdm(test_dataset):
+    x, y = tbc.enc_batch, tbc.original_abstracts
+    hypo = beam_translate(x, vocab)
+    for text in hypo:
+        clean = []
+        for w in text.split():
+            if w == vocab.START_DECODING:
+                pass
+            elif w == vocab.STOP_DECODING:
+                break
+            else:
+                clean.append(w)
                 
-#         write_preds.append(' '.join(clean))
+        write_preds.append(' '.join(clean))
         
-#     for text in y:
-#         clean = []
-#         for w in text.lower().split():
-#             if w == vocab.START_DECODING:
-#                 pass
-#             elif w == vocab.STOP_DECODING:
-#                 break
-#             else:
-#                 clean.append(w)
+    for text in y:
+        clean = []
+        for w in text.lower().split():
+            if w == vocab.START_DECODING:
+                pass
+            elif w == vocab.STOP_DECODING:
+                break
+            else:
+                clean.append(w)
                 
-#         write_targs.append(' '.join(clean))    
+        write_targs.append(' '.join(clean))    
 
 
-# # Save preds and truth to disk ...
-# with open('./results/wikievent_noret_basicdecoder_hypos.txt', 'w') as fp:
-#     fp.write('\n'.join(write_preds) + '\n')
-# print("\nHypos written to disk.")
+# Save preds and truth to disk ...
+with open('./results/wikievent_noret_basicdecoder_hypos.txt', 'w') as fp:
+    fp.write('\n'.join(write_preds) + '\n')
+print("\nHypos written to disk.")
 
-# with open('./results/wikievent_noret_basicdecoder_targets.txt', 'w') as fp:
-#     fp.write('\n'.join(write_targs) + '\n')
-# print("\nTargets written to disk.")
-
-
-
-
+with open('./results/wikievent_noret_basicdecoder_targets.txt', 'w') as fp:
+    fp.write('\n'.join(write_targs) + '\n')
+print("\nTargets written to disk.")
